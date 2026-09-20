@@ -1,4 +1,4 @@
-# Great Jarvis v5.9
+# Great Jarvis v6.0
 
 Telegram: `@greatjarvis_bot`
 
@@ -316,3 +316,20 @@ Now:
 - OpenRouter fallback has an 18 second timeout;
 - the bot immediately shows Telegram typing activity while processing a photo;
 - failures return to the user instead of hanging indefinitely.
+
+
+## v6.0 — natural human chat style
+
+Great Jarvis now behaves more like a real Telegram conversation.
+
+Changes:
+- more natural, confident conversational tone;
+- avoids repetitive assistant phrases such as "Конечно!" at the start of every reply;
+- simple questions tend to get short answers;
+- complex questions can still get detailed answers;
+- AI replies may arrive as one message, two messages, or several natural paragraph bubbles;
+- message count varies instead of splitting every response the same way;
+- short replies normally stay as a single message;
+- photo and voice answers use the same conversational delivery style.
+
+The splitting is deterministic per response text, so it feels varied without relying on unstable randomness.

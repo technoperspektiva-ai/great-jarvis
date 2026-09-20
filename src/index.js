@@ -265,7 +265,7 @@ export default {
       return json({
         ok: true,
         name: "great-jarvis",
-        version: "5.9.0",
+        version: "6.0.0",
         telegram: "@greatjarvis_bot",
         providers: providerStatus(env),
         models: Object.fromEntries(
@@ -754,13 +754,12 @@ async function handleUpdate(update, env) {
       let routeSuffix = "";
       if (result.globalFallback) {
         routeSuffix =
-          `\n\n⚠️ Выбранная модель сейчас недоступна.` +
-          `\n✅ Ответил резерв: ${MODELS[result.modelKey].title} · ${PROVIDERS[result.provider].title}`;
+          `\n\n⚠️ Резервная модель: ${MODELS[result.modelKey].title} · ${PROVIDERS[result.provider].title}`;
       } else if (result.fallback) {
         routeSuffix = `\n\n↪️ Запасной маршрут: ${PROVIDERS[result.provider].title}`;
       }
 
-      await sendLong(env, chatId, result.text + routeSuffix);
+      await sendHumanReply(env, chatId, result.text + routeSuffix);
       return;
     }
 
@@ -785,7 +784,7 @@ async function handleUpdate(update, env) {
       );
       await appendChatHistory(env, userId, "assistant", cleanText);
 
-      await sendLong(env, chatId, cleanText);
+      await sendHumanReply(env, chatId, cleanText);
       return;
     }
 
@@ -809,7 +808,7 @@ async function handleUpdate(update, env) {
       routeSuffix = `\n\n↪️ Запасной маршрут: ${PROVIDERS[result.provider].title}`;
     }
 
-    await sendLong(env, chatId, result.text + routeSuffix);
+    await sendHumanReply(env, chatId, result.text + routeSuffix);
   } catch (e) {
     console.error("CHAT_ERROR", e);
     await send(env, chatId,
@@ -1595,8 +1594,22 @@ async function callProvider(env, providerId, model, userText, maxTokens = 1800, 
     throw new Error(`${providerSecretName(provider)} missing`);
   }
 
-  const systemPrompt =
+  const baseSystemPrompt =
     env.SYSTEM_PROMPT || "Ты Great Jarvis — полезный Telegram-ассистент.";
+
+  const systemPrompt = `${baseSystemPrompt}
+
+Стиль общения:
+- Пиши как живой собеседник, а не как справочная служба.
+- Тон спокойный, уверенный, естественный, скорее мужской по подаче, но без карикатурной грубости и показного сленга.
+- Не начинай каждый ответ с «Конечно», «Разумеется», «С удовольствием помогу» и подобных шаблонов.
+- Подстраивай длину ответа под ситуацию: иногда достаточно 1–2 коротких фраз, иногда нужен подробный ответ.
+- Не превращай каждый ответ в список. Используй списки только когда они реально удобнее.
+- Можно отвечать разговорно и тепло, если пользователь пишет разговорно.
+- Если вопрос простой — отвечай коротко. Если сложный — объясняй подробнее.
+- Не повторяй вопрос пользователя без необходимости.
+- Не добавляй лишние вступления и финальные фразы ради вежливости.
+- Иногда естественно разбивай мысль на несколько коротких абзацев, как в переписке.`;
 
   const historyMessages = Array.isArray(history)
     ? history
@@ -1740,6 +1753,97 @@ function send(env, chatId, text) {
     text,
     disable_web_page_preview: true
   });
+}
+
+
+function hashTextForChatStyle(text) {
+  let h = 2166136261;
+  const str = String(text || "");
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function splitHumanMessages(text) {
+  const cleaned = String(text || "").trim();
+  if (!cleaned) return [];
+
+  // Telegram hard limit safety.
+  if (cleaned.length > 7000) {
+    const chunks = [];
+    for (let i = 0; i < cleaned.length; i += 3600) {
+      chunks.push(cleaned.slice(i, i + 3600));
+    }
+    return chunks;
+  }
+
+  // Very short replies should normally stay as one message.
+  if (cleaned.length <= 220) return [cleaned];
+
+  const seed = hashTextForChatStyle(cleaned);
+  const mode = seed % 5;
+
+  // Sometimes keep even a medium/long reply as one bubble.
+  if (mode === 0 && cleaned.length < 1800) return [cleaned];
+
+  const paragraphs = cleaned
+    .split(/\n{2,}/)
+    .map(x => x.trim())
+    .filter(Boolean);
+
+  // If the model already wrote natural paragraphs, use them as bubbles sometimes.
+  if (paragraphs.length >= 2 && paragraphs.length <= 4 && mode !== 1) {
+    return paragraphs;
+  }
+
+  // For medium replies, occasionally create 2 bubbles at a sentence boundary.
+  if (cleaned.length >= 300 && cleaned.length <= 1600 && mode >= 2) {
+    const target = Math.floor(cleaned.length * (0.42 + ((seed % 17) / 100)));
+    const candidates = [];
+
+    const re = /[.!?…](?:\s+|$)/g;
+    let m;
+    while ((m = re.exec(cleaned)) !== null) {
+      if (m.index > 120 && m.index < cleaned.length - 100) {
+        candidates.push(m.index + 1);
+      }
+    }
+
+    if (candidates.length) {
+      let cut = candidates[0];
+      let best = Math.abs(cut - target);
+      for (const pos of candidates) {
+        const d = Math.abs(pos - target);
+        if (d < best) {
+          cut = pos;
+          best = d;
+        }
+      }
+
+      const a = cleaned.slice(0, cut).trim();
+      const b = cleaned.slice(cut).trim();
+      if (a && b) return [a, b];
+    }
+  }
+
+  return [cleaned];
+}
+
+async function sendHumanReply(env, chatId, text) {
+  const parts = splitHumanMessages(text);
+
+  for (let i = 0; i < parts.length; i++) {
+    if (i > 0) {
+      await new Promise(resolve => setTimeout(resolve, 350));
+    }
+
+    const part = parts[i];
+    for (let j = 0; j < part.length; j += 3900) {
+      await send(env, chatId, part.slice(j, j + 3900));
+    }
+  }
 }
 
 async function sendLong(env, chatId, text) {
