@@ -265,7 +265,7 @@ export default {
       return json({
         ok: true,
         name: "great-jarvis",
-        version: "5.8.0",
+        version: "5.9.0",
         telegram: "@greatjarvis_bot",
         providers: providerStatus(env),
         models: Object.fromEntries(
@@ -766,6 +766,8 @@ async function handleUpdate(update, env) {
 
     // Photo flow
     if (photos.length) {
+      await telegram(env, "sendChatAction", { chat_id: chatId, action: "typing" });
+
       const best = photos[photos.length - 1];
       const imageDataUrl = await telegramPhotoToDataUrl(env, best.file_id);
       const prompt = text
@@ -1348,53 +1350,31 @@ async function askVisionWithFallback(env, imageDataUrl, prompt) {
   const errors = [];
 
   // Primary: native Cloudflare Qwen 3.8 27B vision.
+  // IMPORTANT: pass the FULL data:image/...;base64,... URL so MIME is preserved.
   if (env.AI) {
     try {
-      const base64 = imageDataUrl.split(",")[1] || "";
-      const result = await env.AI.run("@cf/qwen/qwen3.8-27b", {
-        messages: [
-          {
-            role: "user",
-            content: [
-              { type: "text", text: prompt || "Опиши изображение." },
-              { type: "image_url", image_url: { url: imageDataUrl } }
-            ]
-          }
-        ]
+      const run = env.AI.run("@cf/qwen/qwen3.8-27b", {
+        prompt: prompt || "Опиши изображение.",
+        image: imageDataUrl,
+        max_tokens: 1200
       });
+
+      const timeout = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Cloudflare vision timeout after 20s")), 20000)
+      );
+
+      const result = await Promise.race([run, timeout]);
 
       const text =
         result?.response ||
         result?.result?.response ||
         result?.choices?.[0]?.message?.content ||
         result?.output_text ||
-        result?.result;
+        (typeof result?.result === "string" ? result.result : "");
 
       if (typeof text === "string" && text.trim()) {
         return {
           text: text.trim(),
-          provider: "cloudflare",
-          providerTitle: "Cloudflare Workers AI",
-          model: "@cf/qwen/qwen3.8-27b"
-        };
-      }
-
-      // Some Workers AI vision models accept a separate image field.
-      const result2 = await env.AI.run("@cf/qwen/qwen3.8-27b", {
-        prompt: prompt || "Опиши изображение.",
-        image: base64
-      });
-
-      const text2 =
-        result2?.response ||
-        result2?.result?.response ||
-        result2?.choices?.[0]?.message?.content ||
-        result2?.output_text ||
-        result2?.result;
-
-      if (typeof text2 === "string" && text2.trim()) {
-        return {
-          text: text2.trim(),
           provider: "cloudflare",
           providerTitle: "Cloudflare Workers AI",
           model: "@cf/qwen/qwen3.8-27b"
@@ -1407,7 +1387,7 @@ async function askVisionWithFallback(env, imageDataUrl, prompt) {
     }
   }
 
-  // Fallback: explicit OpenRouter vision model.
+  // Fallback: OpenRouter vision with its own timeout.
   const routes = [
     {
       provider: "openrouter",
@@ -1426,7 +1406,8 @@ async function askVisionWithFallback(env, imageDataUrl, prompt) {
         route.provider,
         route.model,
         imageDataUrl,
-        prompt
+        prompt,
+        18000
       );
 
       return {
@@ -1442,59 +1423,84 @@ async function askVisionWithFallback(env, imageDataUrl, prompt) {
 
   throw new Error(errors.join(" | ") || "No vision route available");
 }
-async function callVisionProvider(env, providerId, model, imageDataUrl, prompt) {
+async function callVisionProvider(
+  env,
+  providerId,
+  model,
+  imageDataUrl,
+  prompt,
+  timeoutMs = 18000
+) {
   const provider = PROVIDERS[providerId];
+
   if (!providerConnected(env, provider)) {
     throw new Error(`${providerSecretName(provider)} missing`);
   }
 
   if (provider.native) {
-    throw new Error("Native Workers AI vision route is not configured in this build");
+    throw new Error("Native Workers AI vision route is not configured here");
   }
 
-  const response = await fetch(`${provider.base}/chat/completions`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${env[provider.keyEnv]}`,
-      "Content-Type": "application/json",
-      ...(providerId === "openrouter"
-        ? {
-            "HTTP-Referer": "https://great-jarvis.black-sci-official.workers.dev",
-            "X-Title": "Great Jarvis"
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort("vision_timeout"), timeoutMs);
+
+  try {
+    const response = await fetch(`${provider.base}/chat/completions`, {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${env[provider.keyEnv]}`,
+        "Content-Type": "application/json",
+        ...(providerId === "openrouter"
+          ? {
+              "HTTP-Referer": "https://great-jarvis.black-sci-official.workers.dev",
+              "X-Title": "Great Jarvis"
+            }
+          : {})
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: prompt },
+              { type: "image_url", image_url: { url: imageDataUrl } }
+            ]
           }
-        : {})
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        {
-          role: "user",
-          content: [
-            { type: "text", text: prompt },
-            { type: "image_url", image_url: { url: imageDataUrl } }
-          ]
-        }
-      ],
-      max_tokens: 1200
-    })
-  });
+        ],
+        max_tokens: 1200
+      })
+    });
 
-  const data = await response.json();
+    let data;
+    try {
+      data = await response.json();
+    } catch {
+      throw new Error(`Vision provider returned non-JSON HTTP ${response.status}`);
+    }
 
-  if (!response.ok) {
-    throw new Error(
-      data?.error?.message ||
-      data?.message ||
-      `HTTP ${response.status}`
-    );
+    if (!response.ok) {
+      throw new Error(
+        data?.error?.message ||
+        data?.message ||
+        `HTTP ${response.status}`
+      );
+    }
+
+    const content = data?.choices?.[0]?.message?.content;
+    if (typeof content === "string" && content.trim()) return content.trim();
+
+    throw new Error("Empty vision response");
+  } catch (e) {
+    if (String(e?.name || "").includes("Abort") || String(e?.message || "").includes("vision_timeout")) {
+      throw new Error(`Vision timeout after ${Math.round(timeoutMs / 1000)}s`);
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
   }
-
-  const content = data?.choices?.[0]?.message?.content;
-  if (typeof content === "string" && content.trim()) return content.trim();
-
-  throw new Error("Empty vision response");
 }
-
 async function getUserModel(env, userId) {
   try {
     const id = env.USER_PREFS.idFromName(String(userId));

@@ -1,4 +1,4 @@
-# Great Jarvis v5.8
+# Great Jarvis v5.9
 
 Telegram: `@greatjarvis_bot`
 
@@ -300,3 +300,19 @@ Supported detection:
 - GIF
 
 Unknown Telegram photo payloads fall back to `image/jpeg`.
+
+
+## v5.9 reliable photo vision
+
+Fixes a second MIME bug in the Cloudflare Qwen vision call.
+
+Previously the Worker detected `image/jpeg` correctly, but then stripped the
+`data:image/jpeg;base64,` prefix before passing the image to Workers AI.
+That caused the model to see the payload as `application/octet-stream`.
+
+Now:
+- Qwen receives the full `data:image/...;base64,...` value;
+- Cloudflare vision has a 20 second timeout;
+- OpenRouter fallback has an 18 second timeout;
+- the bot immediately shows Telegram typing activity while processing a photo;
+- failures return to the user instead of hanging indefinitely.
