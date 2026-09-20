@@ -1,4 +1,4 @@
-# Great Jarvis v4
+# Great Jarvis v4.3
 
 Updated free-model routing.
 
@@ -19,6 +19,21 @@ Updated free-model routing.
 - MiMo V2.5
   - Token Harbor: `mimo-v2.5:free`
 
+- TH-Rudder
+  - Token Harbor: `th-rudder`
+
+- Mistral Large
+  - NaraRouter: `mistral-large`
+
+- Mistral Medium 3.5
+  - NaraRouter: `mistral-medium-3-5`
+
+- Tencent HY3 Free
+  - NaraRouter: `tencent-hy3-free`
+
+- Nara Auto
+  - NaraRouter: `auto/bynara`
+
 - Orca Auto Free
   - OrcaRouter: `orcarouter/free`
 
@@ -32,8 +47,18 @@ Provider API keys:
 - `TEAMOROUTER_API_KEY`
 - `ORCAROUTER_API_KEY`
 - `TOKENHARBOR_API_KEY`
+- `NARAROUTER_API_KEY`
 
 No OpenAI API key is needed.
+
+NaraRouter base URL:
+`https://router.bynara.id/v1`
+
+NaraRouter keys normally start with:
+`sk-nry-`
+
+To see the exact models enabled for your Nara account:
+`https://great-jarvis.black-sci-official.workers.dev/nara-models`
 
 ## Deploy
 

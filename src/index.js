@@ -15,6 +15,11 @@ const PROVIDERS = {
     title: "Token Harbor",
     base: "https://tokenharbor.ai/v1",
     keyEnv: "TOKENHARBOR_API_KEY"
+  },
+  nara: {
+    title: "NaraRouter",
+    base: "https://router.bynara.id/v1",
+    keyEnv: "NARAROUTER_API_KEY"
   }
 };
 
@@ -44,6 +49,36 @@ const MODELS = {
     title: "MiMo V2.5 Free",
     routes: [
       { provider: "tokenharbor", model: "mimo-v2.5:free" }
+    ]
+  },
+  th_rudder: {
+    title: "TH-Rudder",
+    routes: [
+      { provider: "tokenharbor", model: "th-rudder" }
+    ]
+  },
+  nara_mistral_large: {
+    title: "Mistral Large",
+    routes: [
+      { provider: "nara", model: "mistral-large" }
+    ]
+  },
+  nara_mistral_medium: {
+    title: "Mistral Medium 3.5",
+    routes: [
+      { provider: "nara", model: "mistral-medium-3-5" }
+    ]
+  },
+  nara_tencent_hy3_free: {
+    title: "Tencent HY3 Free",
+    routes: [
+      { provider: "nara", model: "tencent-hy3-free" }
+    ]
+  },
+  nara_auto: {
+    title: "Nara Auto",
+    routes: [
+      { provider: "nara", model: "auto/bynara" }
     ]
   },
   orca_free: {
@@ -91,7 +126,7 @@ export default {
       return json({
         ok: true,
         name: "great-jarvis",
-        version: "4.0.0",
+        version: "4.3.0",
         telegram: "@greatjarvis_bot",
         providers: providerStatus(env),
         models: Object.fromEntries(
@@ -128,6 +163,10 @@ export default {
 
     if (request.method === "GET" && url.pathname === "/webhook-info") {
       return webhookInfo(env);
+    }
+
+    if (request.method === "GET" && url.pathname === "/nara-models") {
+      return naraModels(env);
     }
 
     if (request.method === "GET" && url.pathname === "/test-routes") {
@@ -205,6 +244,57 @@ async function webhookInfo(env) {
 
   const response = await fetch(`${TG}/bot${env.TELEGRAM_BOT_TOKEN}/getWebhookInfo`);
   return json(await response.json(), response.ok ? 200 : 500);
+}
+
+async function naraModels(env) {
+  const provider = PROVIDERS.nara;
+  const key = env[provider.keyEnv];
+
+  if (!key) {
+    return json({
+      ok: false,
+      error: "NARAROUTER_API_KEY is missing",
+      hint: "Add it in Cloudflare Variables and Secrets."
+    }, 500);
+  }
+
+  try {
+    const response = await fetch(`${provider.base}/models`, {
+      headers: {
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json"
+      }
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      return json({
+        ok: false,
+        status: response.status,
+        error: data?.error?.message || data?.message || data
+      }, response.status);
+    }
+
+    const models = Array.isArray(data?.data)
+      ? data.data.map(item => ({
+          id: typeof item === "string" ? item : item?.id,
+          reasoning: typeof item === "object" ? item?.reasoning : undefined
+        })).filter(x => x.id)
+      : [];
+
+    return json({
+      ok: true,
+      provider: "NaraRouter",
+      count: models.length,
+      models
+    });
+  } catch (e) {
+    return json({
+      ok: false,
+      error: String(e?.message || e)
+    }, 500);
+  }
 }
 
 async function testRoutes(env) {
@@ -319,12 +409,20 @@ async function handleUpdate(update, env) {
     return;
   }
 
+  if (text === "/naramodels") {
+    await send(env, chatId,
+      "Модели NaraRouter для твоего ключа:\nhttps://great-jarvis.black-sci-official.workers.dev/nara-models"
+    );
+    return;
+  }
+
   if (text === "/help") {
     await send(env, chatId,
       "/model — выбрать модель\n" +
       "/current — текущая модель\n" +
       "/providers — статус API\n" +
       "/testroutes — диагностика всех free-маршрутов\n" +
+      "/naramodels — модели NaraRouter для твоего ключа\n" +
       "/help — помощь"
     );
     return;
@@ -391,6 +489,11 @@ async function showModelMenu(env, chatId, userId) {
       "DeepSeek V4 Pro → TeamoRouter → OrcaRouter\n" +
       "DeepSeek V4 Flash → TeamoRouter → OrcaRouter → Token Harbor\n" +
       "MiMo → Token Harbor\n" +
+      "TH-Rudder → Token Harbor\n" +
+      "Mistral Large → NaraRouter\n" +
+      "Mistral Medium 3.5 → NaraRouter\n" +
+      "Tencent HY3 Free → NaraRouter\n" +
+      "Nara Auto → NaraRouter\n" +
       "Orca Auto Free → OrcaRouter",
     reply_markup: modelKeyboard(current)
   });
@@ -403,6 +506,11 @@ function modelKeyboard(current) {
       [{ text: `${current === "deepseek_pro" ? "✅ " : ""}DeepSeek V4 Pro`, callback_data: "model:deepseek_pro" }],
       [{ text: `${current === "deepseek_flash" ? "✅ " : ""}DeepSeek V4 Flash`, callback_data: "model:deepseek_flash" }],
       [{ text: `${current === "mimo" ? "✅ " : ""}MiMo V2.5`, callback_data: "model:mimo" }],
+      [{ text: `${current === "th_rudder" ? "✅ " : ""}TH-Rudder`, callback_data: "model:th_rudder" }],
+      [{ text: `${current === "nara_mistral_large" ? "✅ " : ""}Mistral Large`, callback_data: "model:nara_mistral_large" }],
+      [{ text: `${current === "nara_mistral_medium" ? "✅ " : ""}Mistral Medium 3.5`, callback_data: "model:nara_mistral_medium" }],
+      [{ text: `${current === "nara_tencent_hy3_free" ? "✅ " : ""}Tencent HY3 Free`, callback_data: "model:nara_tencent_hy3_free" }],
+      [{ text: `${current === "nara_auto" ? "✅ " : ""}Nara Auto`, callback_data: "model:nara_auto" }],
       [{ text: `${current === "orca_free" ? "✅ " : ""}Orca Auto Free`, callback_data: "model:orca_free" }]
     ]
   };
