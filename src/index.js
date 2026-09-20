@@ -224,6 +224,35 @@ export class UserPrefs {
       return Response.json({ ok: true, authenticated: Boolean(body?.authenticated) });
     }
 
+    if (request.method === "GET" && url.pathname === "/history") {
+      const history = (await this.state.storage.get("history")) || [];
+      return Response.json({ history });
+    }
+
+    if (request.method === "POST" && url.pathname === "/append-history") {
+      const body = await request.json();
+      const role = body?.role;
+      const content = String(body?.content || "").trim();
+
+      if (!["user", "assistant"].includes(role) || !content) {
+        return Response.json({ ok: false, error: "invalid_history_item" }, { status: 400 });
+      }
+
+      const history = (await this.state.storage.get("history")) || [];
+      history.push({ role, content });
+
+      // Keep the latest 24 messages (~12 conversational turns).
+      const trimmed = history.slice(-24);
+      await this.state.storage.put("history", trimmed);
+
+      return Response.json({ ok: true, count: trimmed.length });
+    }
+
+    if (request.method === "POST" && url.pathname === "/clear-history") {
+      await this.state.storage.delete("history");
+      return Response.json({ ok: true });
+    }
+
     return new Response("Not found", { status: 404 });
   }
 }
@@ -236,7 +265,7 @@ export default {
       return json({
         ok: true,
         name: "great-jarvis",
-        version: "5.4.1",
+        version: "5.7.0",
         telegram: "@greatjarvis_bot",
         providers: providerStatus(env),
         models: Object.fromEntries(
@@ -572,6 +601,12 @@ async function handleUpdate(update, env) {
     return;
   }
 
+  if (text === "/reset") {
+    await clearChatHistory(env, userId);
+    await send(env, chatId, "🧹 История диалога очищена.");
+    return;
+  }
+
   if (text === "/logout") {
     await setAuthenticated(env, userId, false);
     await send(env, chatId, "🔒 Доступ закрыт. Для входа снова введи пароль.");
@@ -583,7 +618,7 @@ async function handleUpdate(update, env) {
     await send(env, chatId,
       `Привет 👋\n\nЯ Great Jarvis.\n` +
       `Текущая модель: ${MODELS[selected].title}\n\n` +
-      `Можно писать текст, отправлять фото, голосовые и делать стикеры.\n/model — выбрать модель\n/sticker <описание> — сгенерировать стикер\n/current — текущая модель\n/logout — выйти`
+      `Можно писать текст, отправлять фото, голосовые и делать стикеры.\n/model — выбрать модель\n/image <описание> — сгенерировать изображение\n/sticker <описание> — сгенерировать стикер\n/current — текущая модель\n/reset — очистить память чата\n/logout — выйти`
     );
     return;
   }
@@ -623,13 +658,27 @@ async function handleUpdate(update, env) {
     return;
   }
 
+  if (text === "/visiontest") {
+    if (!env.AI) {
+      await send(env, chatId, "❌ Cloudflare AI binding не подключён.");
+    } else {
+      await send(env, chatId,
+        "✅ Cloudflare AI binding подключён.\nОсновной vision: @cf/qwen/qwen3.8-27b\nОтправь фото с подписью «что на фото?» для проверки."
+      );
+    }
+    return;
+  }
+
   if (text === "/help") {
     await send(env, chatId,
       "/model — выбрать модель\n" +
       "/current — текущая модель\n" +
       "/providers — статус API\n" +
       "/testroutes — диагностика маршрутов\n" +
+      "/visiontest — проверить vision-настройку\n" +
+      "/image <описание> — сгенерировать картинку\n" +
       "/sticker <описание> — сгенерировать стикер\n" +
+      "/reset — очистить память чата\n" +
       "/logout — выйти\n" +
       "/help — помощь\n\n" +
       "Можно отправить фото, голосовое, аудиофайл или запросить стикер."
@@ -637,6 +686,7 @@ async function handleUpdate(update, env) {
     return;
   }
 
+  // ROUTING ORDER: sticker -> image -> voice/audio -> photo vision -> normal text
   const stickerPrompt = extractStickerPrompt(text);
   if (stickerPrompt !== null) {
     if (!stickerPrompt) {
@@ -659,6 +709,28 @@ async function handleUpdate(update, env) {
     return;
   }
 
+  const imagePrompt = extractImagePrompt(text);
+  if (imagePrompt !== null) {
+    if (!imagePrompt) {
+      await send(env, chatId,
+        "Опиши, что нужно создать.\n\nНапример:\n/image рыжий кот-космонавт на Луне\nили\nсгенерируй фото уютного домика в снегу"
+      );
+      return;
+    }
+
+    try {
+      await telegram(env, "sendChatAction", { chat_id: chatId, action: "upload_photo" });
+      const imageBlob = await generateImageBlob(env, imagePrompt);
+      await sendGeneratedPhoto(env, chatId, imageBlob);
+    } catch (e) {
+      console.error("IMAGE_GENERATION_ERROR", e);
+      await send(env, chatId,
+        `Не удалось сгенерировать изображение.\n\n${friendlyError(e)}`
+      );
+    }
+    return;
+  }
+
   try {
     await telegram(env, "sendChatAction", { chat_id: chatId, action: "typing" });
 
@@ -673,7 +745,11 @@ async function handleUpdate(update, env) {
       }
 
       const selected = await getUserModel(env, userId);
-      const result = await askSelectedModel(env, selected, transcript.trim());
+      const history = await getChatHistory(env, userId);
+      const result = await askSelectedModel(env, selected, transcript.trim(), history);
+
+      await appendChatHistory(env, userId, "user", transcript.trim());
+      await appendChatHistory(env, userId, "assistant", result.text);
 
       let routeSuffix = "";
       if (result.globalFallback) {
@@ -692,10 +768,22 @@ async function handleUpdate(update, env) {
     if (photos.length) {
       const best = photos[photos.length - 1];
       const imageDataUrl = await telegramPhotoToDataUrl(env, best.file_id);
-      const prompt = text || "Опиши это изображение и ответь на языке пользователя.";
+      const prompt = text
+        ? `Пользователь прислал изображение и спрашивает: ${text}. Внимательно проанализируй именно изображение и ответь по его содержимому.`
+        : "Внимательно проанализируй присланное изображение. Опиши, что на нём видно, и укажи важные детали. Не утверждай, что ты не видишь изображение.";
 
       const vision = await askVisionWithFallback(env, imageDataUrl, prompt);
-      await sendLong(env, chatId, cleanVisionText(vision.text));
+      const cleanText = cleanVisionText(vision.text);
+
+      await appendChatHistory(
+        env,
+        userId,
+        "user",
+        text ? `[Фото] ${text}` : "[Фото] Пользователь отправил изображение."
+      );
+      await appendChatHistory(env, userId, "assistant", cleanText);
+
+      await sendLong(env, chatId, cleanText);
       return;
     }
 
@@ -703,7 +791,11 @@ async function handleUpdate(update, env) {
     if (!text) return;
 
     const selected = await getUserModel(env, userId);
-    const result = await askSelectedModel(env, selected, text);
+    const history = await getChatHistory(env, userId);
+    const result = await askSelectedModel(env, selected, text, history);
+
+    await appendChatHistory(env, userId, "user", text);
+    await appendChatHistory(env, userId, "assistant", result.text);
 
     let routeSuffix = "";
 
@@ -851,6 +943,60 @@ function modelKeyboard(current, statuses = {}) {
 }
 
 
+
+function extractImagePrompt(text) {
+  const t = String(text || "").trim();
+  if (!t) return null;
+
+  const command = t.match(/^\/(?:image|img|photo)(?:@\w+)?(?:\s+([\s\S]*))?$/i);
+  if (command) return (command[1] || "").trim();
+
+  const prefix = t.match(
+    /^(?:сгенерируй|згенеруй|создай|створи|нарисуй|намалюй|зроби)\s+(?:мне\s+|мені\s+)?(?:фото|фотографию|фотографію|картинку|зображення|изображение|арт|рисунок)\s*(?:[:\-]\s*|\s+)?([\s\S]*)$/i
+  );
+  if (prefix) return (prefix[1] || "").trim();
+
+  const labeled = t.match(/^(?:image|картинка|зображення|изображение)\s*[:\-]\s*([\s\S]*)$/i);
+  if (labeled) return (labeled[1] || "").trim();
+
+  return null;
+}
+
+async function generateImageBlob(env, prompt) {
+  if (!env.AI) {
+    throw new Error("Cloudflare Workers AI binding is missing");
+  }
+
+  const result = await env.AI.run("@cf/black-forest-labs/flux-1-schnell", {
+    prompt: String(prompt || "").trim()
+  });
+
+  return normalizeGeneratedImageToBlob(result);
+}
+
+async function sendGeneratedPhoto(env, chatId, blob, caption = "") {
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  form.append("photo", blob, "generated.png");
+
+  if (caption) {
+    form.append("caption", caption.slice(0, 900));
+  }
+
+  const response = await fetch(`${TG}/bot${env.TELEGRAM_BOT_TOKEN}/sendPhoto`, {
+    method: "POST",
+    body: form
+  });
+
+  const data = await response.json();
+
+  if (!response.ok || !data?.ok) {
+    throw new Error(data?.description || `Telegram sendPhoto HTTP ${response.status}`);
+  }
+
+  return data.result;
+}
+
 function extractStickerPrompt(text) {
   const t = String(text || "").trim();
   if (!t) return null;
@@ -969,9 +1115,46 @@ async function sendStickerFile(env, chatId, blob) {
 
 function cleanVisionText(text) {
   return String(text || "")
-    .replace(/^\s*User Safety:\s*safe\s*/i, "")
+    .replace(/^\s*(?:User|Response)\s+Safety:\s*safe\s*/i, "")
     .replace(/^\s*Safety:\s*safe\s*/i, "")
+    .replace(/^\s*Response\s+Safety:\s*[^\n]*\n?/i, "")
     .trim();
+}
+
+async function getChatHistory(env, userId) {
+  try {
+    const id = env.USER_PREFS.idFromName(String(userId));
+    const stub = env.USER_PREFS.get(id);
+    const response = await stub.fetch("https://prefs/history");
+    const data = await response.json();
+    return Array.isArray(data?.history) ? data.history : [];
+  } catch (e) {
+    console.error("HISTORY_GET_ERROR", e);
+    return [];
+  }
+}
+
+async function appendChatHistory(env, userId, role, content) {
+  try {
+    const id = env.USER_PREFS.idFromName(String(userId));
+    const stub = env.USER_PREFS.get(id);
+    await stub.fetch("https://prefs/append-history", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ role, content })
+    });
+  } catch (e) {
+    console.error("HISTORY_APPEND_ERROR", e);
+  }
+}
+
+async function clearChatHistory(env, userId) {
+  const id = env.USER_PREFS.idFromName(String(userId));
+  const stub = env.USER_PREFS.get(id);
+  const response = await stub.fetch("https://prefs/clear-history", {
+    method: "POST"
+  });
+  if (!response.ok) throw new Error("Could not clear chat history");
 }
 
 async function isAuthenticated(env, userId) {
@@ -1105,20 +1288,76 @@ function bytesToBase64(bytes) {
 }
 
 async function askVisionWithFallback(env, imageDataUrl, prompt) {
+  const errors = [];
+
+  // Primary: native Cloudflare Qwen 3.8 27B vision.
+  if (env.AI) {
+    try {
+      const base64 = imageDataUrl.split(",")[1] || "";
+      const result = await env.AI.run("@cf/qwen/qwen3.8-27b", {
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: prompt || "Опиши изображение." },
+              { type: "image_url", image_url: { url: imageDataUrl } }
+            ]
+          }
+        ]
+      });
+
+      const text =
+        result?.response ||
+        result?.result?.response ||
+        result?.choices?.[0]?.message?.content ||
+        result?.output_text ||
+        result?.result;
+
+      if (typeof text === "string" && text.trim()) {
+        return {
+          text: text.trim(),
+          provider: "cloudflare",
+          providerTitle: "Cloudflare Workers AI",
+          model: "@cf/qwen/qwen3.8-27b"
+        };
+      }
+
+      // Some Workers AI vision models accept a separate image field.
+      const result2 = await env.AI.run("@cf/qwen/qwen3.8-27b", {
+        prompt: prompt || "Опиши изображение.",
+        image: base64
+      });
+
+      const text2 =
+        result2?.response ||
+        result2?.result?.response ||
+        result2?.choices?.[0]?.message?.content ||
+        result2?.output_text ||
+        result2?.result;
+
+      if (typeof text2 === "string" && text2.trim()) {
+        return {
+          text: text2.trim(),
+          provider: "cloudflare",
+          providerTitle: "Cloudflare Workers AI",
+          model: "@cf/qwen/qwen3.8-27b"
+        };
+      }
+
+      throw new Error("Cloudflare vision returned empty text");
+    } catch (e) {
+      errors.push(`Cloudflare Qwen vision: ${String(e?.message || e)}`);
+    }
+  }
+
+  // Fallback: explicit OpenRouter vision model.
   const routes = [
     {
       provider: "openrouter",
       model: "inclusionai/ling-3.0-flash-vl:free",
       title: "Ling 3.0 Flash VL"
-    },
-    {
-      provider: "openrouter",
-      model: "openrouter/free",
-      title: "OpenRouter Free"
     }
   ];
-
-  const errors = [];
 
   for (const route of routes) {
     const provider = PROVIDERS[route.provider];
@@ -1146,7 +1385,6 @@ async function askVisionWithFallback(env, imageDataUrl, prompt) {
 
   throw new Error(errors.join(" | ") || "No vision route available");
 }
-
 async function callVisionProvider(env, providerId, model, imageDataUrl, prompt) {
   const provider = PROVIDERS[providerId];
   if (!providerConnected(env, provider)) {
@@ -1226,7 +1464,7 @@ async function setUserModel(env, userId, key) {
   }
 }
 
-async function askSelectedModel(env, key, userText) {
+async function askSelectedModel(env, key, userText, history = []) {
   const selectedKey = MODELS[key] ? key : DEFAULT_MODEL_KEY;
   const selectedConfig = MODELS[selectedKey];
   const errors = [];
@@ -1242,7 +1480,7 @@ async function askSelectedModel(env, key, userText) {
     }
 
     try {
-      const text = await callProvider(env, route.provider, route.model, userText, 1800);
+      const text = await callProvider(env, route.provider, route.model, userText, 1800, 25000, history);
       return {
         text,
         provider: route.provider,
@@ -1269,7 +1507,7 @@ async function askSelectedModel(env, key, userText) {
       if (!providerConnected(env, p)) continue;
 
       try {
-        const text = await callProvider(env, route.provider, route.model, userText, 1800);
+        const text = await callProvider(env, route.provider, route.model, userText, 1800, 25000, history);
         return {
           text,
           provider: route.provider,
@@ -1287,7 +1525,7 @@ async function askSelectedModel(env, key, userText) {
   throw new Error(errors.join(" | ") || "No working route");
 }
 
-async function callProvider(env, providerId, model, userText, maxTokens = 1800, timeoutMs = 25000) {
+async function callProvider(env, providerId, model, userText, maxTokens = 1800, timeoutMs = 25000, history = []) {
   const provider = PROVIDERS[providerId];
 
   if (!providerConnected(env, provider)) {
@@ -1297,16 +1535,26 @@ async function callProvider(env, providerId, model, userText, maxTokens = 1800, 
   const systemPrompt =
     env.SYSTEM_PROMPT || "Ты Great Jarvis — полезный Telegram-ассистент.";
 
+  const historyMessages = Array.isArray(history)
+    ? history
+        .filter(x => ["user", "assistant"].includes(x?.role) && typeof x?.content === "string")
+        .slice(-24)
+        .map(x => ({ role: x.role, content: x.content }))
+    : [];
+
+  const conversationMessages = [
+    { role: "system", content: systemPrompt },
+    ...historyMessages,
+    { role: "user", content: userText }
+  ];
+
   if (provider.native) {
     const timeout = new Promise((_, reject) =>
       setTimeout(() => reject(new Error(`TIMEOUT after ${timeoutMs}ms`)), timeoutMs)
     );
 
     const run = env.AI.run(model, {
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userText }
-      ],
+      messages: conversationMessages,
       max_tokens: maxTokens
     });
 
@@ -1344,10 +1592,7 @@ async function callProvider(env, providerId, model, userText, maxTokens = 1800, 
       signal: controller.signal,
       body: JSON.stringify({
         model,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userText }
-        ],
+        messages: conversationMessages,
         max_tokens: maxTokens
       })
     });

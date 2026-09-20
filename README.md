@@ -1,4 +1,4 @@
-# Great Jarvis v5.4.1
+# Great Jarvis v5.7
 
 Telegram: `@greatjarvis_bot`
 
@@ -213,3 +213,67 @@ Also includes the v5.3.1 voice fix:
 ## v5.4.1 sticker fix
 
 Fixed Cloudflare Workers AI sticker generation by removing unsupported image parameters (`width`, `height`, `num_steps`) from the `@cf/black-forest-labs/flux-1-schnell` call.
+
+
+## v5.5 normal image generation
+
+Great Jarvis now detects explicit image-generation requests before they reach text models.
+
+Supported examples:
+
+```text
+/image рыжий кот-космонавт на Луне
+/photo красивый закат над Киевом
+сгенерируй фото старого автомобиля под дождём
+создай картинку милого медведя
+нарисуй арт футуристического города
+згенеруй зображення їжака на морі
+```
+
+These requests go directly to Cloudflare Workers AI image generation and the generated image is sent back as a Telegram photo.
+
+Sticker generation remains separate through `/sticker`.
+
+No new API key is required; the existing Cloudflare `AI` binding is used.
+
+
+## v5.6 clean routing + real vision
+
+Routing priority is now explicitly:
+
+1. sticker generation
+2. normal image generation
+3. voice/audio transcription
+4. uploaded-photo vision
+5. normal text chat
+
+Uploaded photos now use Cloudflare Workers AI Qwen 3.8 27B as the primary vision route:
+
+`@cf/qwen/qwen3.8-27b`
+
+OpenRouter Ling 3.0 Flash VL remains a fallback.
+
+The bot also strips technical strings such as:
+- `User Safety: safe`
+- `Response Safety: safe`
+
+New command:
+`/visiontest`
+
+No new API secret is required beyond the existing Cloudflare Workers AI `AI` binding.
+
+
+## v5.7 Telegram-account chat memory
+
+Conversation memory is now tied to the Telegram `user_id`.
+
+That means:
+- the same Telegram account keeps its memory across Worker restarts;
+- the same account keeps its memory when using Telegram from another phone/PC;
+- `/logout` only closes access and does NOT delete chat history;
+- `/reset` deletes the saved conversation history.
+
+The last 24 user/assistant messages are stored in the user's Durable Object and are
+included in future text-model requests.
+
+Photo analysis results and voice-message transcriptions are also added to memory.
