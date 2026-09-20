@@ -126,7 +126,7 @@ export default {
       return json({
         ok: true,
         name: "great-jarvis",
-        version: "4.5.0",
+        version: "4.6.0",
         telegram: "@greatjarvis_bot",
         providers: providerStatus(env),
         models: Object.fromEntries(
@@ -396,7 +396,12 @@ async function handleUpdate(update, env) {
   if (text === "/current") {
     const selected = await getUserModel(env, userId);
     const statuses = await getModelStatuses(env);
-    const status = statuses[selected] ? "✅ доступна" : "❌ недоступна";
+    const state = statuses?.[selected]?.state;
+    const status = state === "ok"
+      ? "✅ отвечает сейчас"
+      : state === "bad"
+        ? "❌ подтверждённая ошибка"
+        : "⚠️ временно не подтверждена";
     await send(env, chatId, `Текущая модель: ${MODELS[selected].title}\nСтатус: ${status}`);
     return;
   }
@@ -499,29 +504,94 @@ async function getModelStatuses(env) {
   const entries = Object.entries(MODELS);
 
   const results = await Promise.all(entries.map(async ([key, cfg]) => {
-    const routeChecks = await Promise.all(cfg.routes.map(async route => {
+    const routeStates = await Promise.all(cfg.routes.map(async route => {
       const provider = PROVIDERS[route.provider];
-      if (!env[provider.keyEnv]) return false;
+      const apiKey = env[provider.keyEnv];
+
+      if (!apiKey) {
+        return { state: "bad", reason: `${provider.keyEnv} missing` };
+      }
 
       try {
-        await callProvider(
-          env,
-          route.provider,
-          route.model,
-          "Reply with exactly: OK",
-          8,
-          3500
-        );
-        return true;
-      } catch {
-        return false;
+        const result = await probeRoute(env, route.provider, route.model);
+        return result;
+      } catch (e) {
+        return { state: "unknown", reason: String(e?.message || e) };
       }
     }));
 
-    return [key, routeChecks.some(Boolean)];
+    if (routeStates.some(x => x.state === "ok")) {
+      return [key, { state: "ok", routes: routeStates }];
+    }
+
+    if (routeStates.some(x => x.state === "unknown")) {
+      return [key, { state: "unknown", routes: routeStates }];
+    }
+
+    return [key, { state: "bad", routes: routeStates }];
   }));
 
   return Object.fromEntries(results);
+}
+
+async function probeRoute(env, providerId, model) {
+  const provider = PROVIDERS[providerId];
+  const key = env[provider.keyEnv];
+
+  if (!key) return { state: "bad", reason: `${provider.keyEnv} missing` };
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort("health_timeout"), 8000);
+
+  try {
+    const response = await fetch(`${provider.base}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json"
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model,
+        messages: [{ role: "user", content: "Reply only OK" }],
+        max_tokens: 8
+      })
+    });
+
+    let data = null;
+    try {
+      data = await response.json();
+    } catch {}
+
+    if (response.ok) {
+      return { state: "ok", reason: "working" };
+    }
+
+    const msg = String(
+      data?.error?.message ||
+      data?.message ||
+      data?.detail ||
+      `HTTP ${response.status}`
+    );
+
+    if (response.status === 401 || response.status === 403) {
+      return { state: "bad", reason: `${response.status}: ${msg}` };
+    }
+
+    if (response.status === 404 || /model.*not|unknown model|not active/i.test(msg)) {
+      return { state: "bad", reason: `${response.status}: ${msg}` };
+    }
+
+    // Rate limits, overloaded providers and 5xx are temporary states.
+    return { state: "unknown", reason: `${response.status}: ${msg}` };
+  } catch (e) {
+    if (e?.name === "AbortError" || String(e).includes("health_timeout")) {
+      return { state: "unknown", reason: "health check timeout" };
+    }
+    return { state: "unknown", reason: String(e?.message || e) };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function showModelMenu(env, chatId, userId) {
@@ -532,15 +602,22 @@ async function showModelMenu(env, chatId, userId) {
     chat_id: chatId,
     text:
       "Выбери модель:\n\n" +
-      "✅ — доступна сейчас\n" +
-      "❌ — сейчас недоступна\n\n" +
-      "Если выбранная модель перестанет отвечать, Great Jarvis автоматически перейдёт на рабочий резерв.",
+      "✅ — отвечает сейчас\n" +
+      "⚠️ — сервис подключён, но проверка не подтвердилась (таймаут / лимит / временная ошибка)\n" +
+      "❌ — подтверждённая ошибка ключа или модели\n\n" +
+      "Статус не блокирует работу: Great Jarvis всё равно пробует выбранную модель и рабочие резервы.",
     reply_markup: modelKeyboard(current, statuses)
   });
 }
 
 function modelKeyboard(current, statuses = {}) {
-  const icon = key => statuses[key] === false ? "❌" : "✅";
+  const icon = key => {
+    const state = statuses?.[key]?.state;
+    if (state === "ok") return "✅";
+    if (state === "bad") return "❌";
+    return "⚠️";
+  };
+
   const selected = key => current === key ? "• " : "";
 
   return {

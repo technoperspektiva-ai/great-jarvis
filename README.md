@@ -1,4 +1,4 @@
-# Great Jarvis v4.5
+# Great Jarvis v4.6
 
 Updated free-model routing.
 
@@ -111,3 +111,16 @@ the whole diagnostics page.
 - If all routes for the selected model fail, Great Jarvis automatically tries
   other configured models until one succeeds.
 - `/current` also shows the live availability status.
+
+
+## v4.6 health status fix
+
+The model menu no longer treats a slow provider as dead.
+
+Statuses:
+- ✅ confirmed working
+- ⚠️ connected but health check timed out / rate limited / temporary provider error
+- ❌ confirmed auth or model error
+
+Health probes run in parallel with an 8-second timeout.
+The status is informational only and never blocks normal chat routing.
