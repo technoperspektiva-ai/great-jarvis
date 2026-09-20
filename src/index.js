@@ -359,7 +359,7 @@ export default {
       return json({
         ok: true,
         name: "great-jarvis",
-        version: "6.3.0",
+        version: "6.4.0",
         telegram: "@greatjarvis_bot",
         providers: providerStatus(env),
         models: Object.fromEntries(
@@ -782,7 +782,7 @@ async function handleUpdate(update, env) {
       "/reset — очистить память чата\n" +
       "/logout — выйти\n" +
       "/help — помощь\n\n" +
-      "Можно отправить фото, голосовое, аудиофайл или запросить стикер."
+      "Можно отправить фото, голосовое, аудиофайл, запросить стикер или прислать фото с подписью «зроби стікер»."
     );
     return;
   }
@@ -999,6 +999,41 @@ async function handleUpdate(update, env) {
 
       const best = photos[photos.length - 1];
       const imageDataUrl = await telegramPhotoToDataUrl(env, best.file_id);
+
+      // Photo -> sticker flow
+      if (wantsStickerFromPhoto(text)) {
+        const describePrompt =
+          "Опиши главное, что изображено на фото, для генерации стикера. " +
+          "Сконцентрируйся на основном персонаже, животном, человеке или объекте. " +
+          "Дай краткое, визуально понятное описание в 1-2 предложениях без лишних рассуждений.";
+
+        const vision = await askVisionWithFallback(env, imageDataUrl, describePrompt);
+        const subject = cleanVisionText(vision.text) || "главный объект на фото";
+
+        const stickerPrompt =
+          `Create a cute, clean Telegram sticker based on the uploaded photo. ` +
+          `Main subject: ${subject}. ` +
+          `Preserve the recognizable essence of the subject from the photo, but render it as a polished sticker illustration. ` +
+          `Centered composition, isolated subject, simple sticker style, no watermark, no text, suitable for Telegram sticker.`;
+
+        const stickerBlob = await generateStickerImageBlob(env, stickerPrompt);
+        await sendStickerFile(env, chatId, stickerBlob);
+
+        await appendChatHistory(
+          env,
+          userId,
+          "user",
+          text ? `[Фото→Стикер] ${text}` : "[Фото→Стикер] Пользователь отправил фото для создания стикера."
+        );
+        await appendChatHistory(
+          env,
+          userId,
+          "assistant",
+          `Создан стикер на основе фото: ${subject}`
+        );
+        return;
+      }
+
       const prompt = text
         ? `Пользователь прислал изображение и спрашивает: ${text}. Внимательно проанализируй именно изображение и ответь по его содержимому.`
         : "Внимательно проанализируй присланное изображение. Опиши, что на нём видно, и укажи важные детали. Не утверждай, что ты не видишь изображение.";
@@ -1174,6 +1209,16 @@ function modelKeyboard(current, statuses = {}) {
 }
 
 
+
+
+function wantsStickerFromPhoto(text) {
+  const t = String(text || "").trim();
+  if (!t) return false;
+
+  return /(?:^|\b)(?:зроби|сделай|make|create|turn)\b[\s\S]{0,40}\b(?:стікер|стикер|sticker)\b/i.test(t) ||
+         /\b(?:стікер|стикер|sticker)\b[\s\S]{0,40}\b(?:з цього фото|из этого фото|from this photo|з фото|из фото)\b/i.test(t) ||
+         /^\/(?:photosticker|stickerphoto)(?:@\w+)?$/i.test(t);
+}
 
 function extractImagePrompt(text) {
   const t = String(text || "").trim();

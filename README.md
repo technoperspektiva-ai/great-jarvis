@@ -1,4 +1,4 @@
-# Great Jarvis v6.3
+# Great Jarvis v6.4
 
 Telegram: `@greatjarvis_bot`
 
@@ -410,3 +410,22 @@ Added:
 `/youtube-status`
 
 It reports whether `YOUTUBE_API_KEY` is present in Cloudflare Secrets.
+
+
+## v6.4 — create sticker from photo
+
+Great Jarvis can now create a sticker based on an uploaded photo.
+
+How to use:
+- send a photo with caption `зроби стікер`
+- or `сделай стикер`
+- or `зроби стікер з цього фото`
+- or `/photosticker`
+
+Flow:
+1. Jarvis analyzes the uploaded photo with vision.
+2. Extracts the main visible subject.
+3. Generates a clean Telegram sticker illustration from that subject.
+4. Sends it back as a Telegram sticker.
+
+This is a generated sticker based on the contents of the photo, not a raw file conversion.
