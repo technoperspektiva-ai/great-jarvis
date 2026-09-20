@@ -1,56 +1,6 @@
 const TG = "https://api.telegram.org";
 
-/*
-  Exact free routes requested by the user.
-  Each model has a primary provider and, where available, an alternate route.
-*/
-const MODELS = {
-  qwen: {
-    title: "Qwen 3.8 27B Free",
-    short: "Qwen 3.8 27B",
-    routes: [
-      {
-        provider: "orca",
-        model: "qwen/qwen3.8-27b-free"
-      },
-      {
-        provider: "tokenharbor",
-        model: "qwen3.8-27b:free"
-      }
-    ]
-  },
-  deepseek: {
-    title: "DeepSeek V4 Pro Free",
-    short: "DeepSeek V4 Pro",
-    routes: [
-      {
-        provider: "teamo",
-        model: "deepseek-v4-pro-free"
-      },
-      {
-        provider: "orca",
-        model: "deepseek/deepseek-v4-pro-free"
-      }
-    ]
-  },
-  mimo: {
-    title: "MiMo V2.5 Free",
-    short: "MiMo V2.5",
-    routes: [
-      {
-        provider: "tokenharbor",
-        model: "mimo-v2.5:free"
-      }
-    ]
-  }
-};
-
 const PROVIDERS = {
-  tokenharbor: {
-    title: "Token Harbor",
-    base: "https://tokenharbor.ai/v1",
-    keyEnv: "TOKENHARBOR_API_KEY"
-  },
   teamo: {
     title: "TeamoRouter",
     base: "https://api.teamorouter.com/v1",
@@ -60,10 +10,51 @@ const PROVIDERS = {
     title: "OrcaRouter",
     base: "https://api.orcarouter.ai/v1",
     keyEnv: "ORCAROUTER_API_KEY"
+  },
+  tokenharbor: {
+    title: "Token Harbor",
+    base: "https://tokenharbor.ai/v1",
+    keyEnv: "TOKENHARBOR_API_KEY"
   }
 };
 
-const DEFAULT_MODEL_KEY = "qwen";
+const MODELS = {
+  qwen: {
+    title: "Qwen 3.8 27B Free",
+    routes: [
+      { provider: "orca", model: "qwen/qwen3.8-27b-free" }
+    ]
+  },
+  deepseek_pro: {
+    title: "DeepSeek V4 Pro Free",
+    routes: [
+      { provider: "teamo", model: "deepseek-v4-pro-free" },
+      { provider: "orca", model: "deepseek/deepseek-v4-pro-free" }
+    ]
+  },
+  deepseek_flash: {
+    title: "DeepSeek V4 Flash Free",
+    routes: [
+      { provider: "teamo", model: "deepseek-v4-flash-free" },
+      { provider: "orca", model: "deepseek/deepseek-v4-flash-free" },
+      { provider: "tokenharbor", model: "deepseek-v4-flash:free" }
+    ]
+  },
+  mimo: {
+    title: "MiMo V2.5 Free",
+    routes: [
+      { provider: "tokenharbor", model: "mimo-v2.5:free" }
+    ]
+  },
+  orca_free: {
+    title: "Orca Auto Free",
+    routes: [
+      { provider: "orca", model: "orcarouter/free" }
+    ]
+  }
+};
+
+const DEFAULT_MODEL_KEY = "orca_free";
 
 export class UserPrefs {
   constructor(state, env) {
@@ -75,17 +66,17 @@ export class UserPrefs {
     const url = new URL(request.url);
 
     if (request.method === "GET" && url.pathname === "/get") {
-      const selected = await this.state.storage.get("model");
-      return Response.json({ model: selected || DEFAULT_MODEL_KEY });
+      const model = await this.state.storage.get("model");
+      return Response.json({ model: model || DEFAULT_MODEL_KEY });
     }
 
     if (request.method === "POST" && url.pathname === "/set") {
-      const data = await request.json();
-      if (!MODELS[data?.model]) {
+      const body = await request.json();
+      if (!MODELS[body?.model]) {
         return Response.json({ ok: false, error: "invalid_model" }, { status: 400 });
       }
-      await this.state.storage.put("model", data.model);
-      return Response.json({ ok: true, model: data.model });
+      await this.state.storage.put("model", body.model);
+      return Response.json({ ok: true, model: body.model });
     }
 
     return new Response("Not found", { status: 404 });
@@ -100,23 +91,17 @@ export default {
       return json({
         ok: true,
         name: "great-jarvis",
+        version: "4.0.0",
         telegram: "@greatjarvis_bot",
-        version: "3.0.0",
-        storage: "durable-object",
         providers: providerStatus(env),
         models: Object.fromEntries(
-          Object.entries(MODELS).map(([key, value]) => [
+          Object.entries(MODELS).map(([key, cfg]) => [
             key,
-            {
-              title: value.title,
-              routes: value.routes.map(r => ({
-                provider: r.provider,
-                model: r.model
-              }))
-            }
+            { title: cfg.title, routes: cfg.routes }
           ])
         ),
-        setup_webhook: `${url.origin}/setup-webhook`
+        setup_webhook: `${url.origin}/setup-webhook`,
+        test_routes: `${url.origin}/test-routes`
       });
     }
 
@@ -124,21 +109,17 @@ export default {
       return new Response("OK");
     }
 
-    if (request.method === "GET" && url.pathname === "/providers") {
-      return json({ ok: true, providers: providerStatus(env) });
-    }
-
-    if (request.method === "GET" && url.pathname === "/test-routes") {
-      return testRoutes(env);
-    }
-
     if (request.method === "GET" && url.pathname === "/telegram") {
       return json({
         ok: true,
         endpoint: "/telegram",
-        message: "Telegram sends POST requests here.",
+        message: "Telegram sends POST updates here.",
         setup: `${url.origin}/setup-webhook`
       });
+    }
+
+    if (request.method === "GET" && url.pathname === "/providers") {
+      return json({ ok: true, providers: providerStatus(env) });
     }
 
     if (request.method === "GET" && url.pathname === "/setup-webhook") {
@@ -147,6 +128,10 @@ export default {
 
     if (request.method === "GET" && url.pathname === "/webhook-info") {
       return webhookInfo(env);
+    }
+
+    if (request.method === "GET" && url.pathname === "/test-routes") {
+      return testRoutes(env);
     }
 
     if (request.method === "POST" && url.pathname === "/telegram") {
@@ -193,7 +178,6 @@ async function setupWebhook(url, env) {
   }
 
   const webhookUrl = `${url.origin}/telegram`;
-
   const response = await fetch(`${TG}/bot${env.TELEGRAM_BOT_TOKEN}/setWebhook`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -210,7 +194,7 @@ async function setupWebhook(url, env) {
   return json({
     ...data,
     webhook_url: webhookUrl,
-    next: data?.ok ? "Open @greatjarvis_bot and send /start" : "Check TELEGRAM_BOT_TOKEN"
+    next: data?.ok ? "Open @greatjarvis_bot and send /start" : "Check Telegram token"
   }, response.ok ? 200 : 500);
 }
 
@@ -223,20 +207,16 @@ async function webhookInfo(env) {
   return json(await response.json(), response.ok ? 200 : 500);
 }
 
-/*
-  Browser diagnostics. It sends a tiny "Reply only OK" request to each desired route.
-  It never returns the API key.
-*/
 async function testRoutes(env) {
   const tests = [];
 
-  for (const [modelKey, config] of Object.entries(MODELS)) {
-    for (const route of config.routes) {
+  for (const [key, cfg] of Object.entries(MODELS)) {
+    for (const route of cfg.routes) {
       const provider = PROVIDERS[route.provider];
 
       if (!env[provider.keyEnv]) {
         tests.push({
-          model: config.title,
+          model: cfg.title,
           provider: provider.title,
           route_model: route.model,
           ok: false,
@@ -248,30 +228,42 @@ async function testRoutes(env) {
 
       try {
         const started = Date.now();
-        const text = await callProvider(env, route.provider, route.model, "Reply with exactly: OK", 20);
+        const text = await callProvider(env, route.provider, route.model, "Reply with exactly: OK", 16);
         tests.push({
-          model: config.title,
+          model: cfg.title,
           provider: provider.title,
           route_model: route.model,
           ok: true,
           ms: Date.now() - started,
-          response: text.slice(0, 80)
+          response: text.slice(0, 60)
         });
       } catch (e) {
         tests.push({
-          model: config.title,
+          model: cfg.title,
           provider: provider.title,
           route_model: route.model,
           ok: false,
-          error: e.message.slice(0, 300)
+          error: String(e.message || e).slice(0, 320)
         });
       }
     }
   }
 
+  const groups = {};
+  for (const t of tests) {
+    groups[t.model] ||= [];
+    groups[t.model].push(t);
+  }
+
+  const summary = {};
+  for (const [model, items] of Object.entries(groups)) {
+    summary[model] = items.some(x => x.ok);
+  }
+
   return json({
-    ok: tests.some(x => x.ok),
-    note: "At least one working route per desired model is enough. Free quotas and opt-ins can affect availability.",
+    ok: Object.values(summary).some(Boolean),
+    model_status: summary,
+    note: "A model is usable when at least one route for it is OK.",
     tests
   });
 }
@@ -290,11 +282,11 @@ async function handleUpdate(update, env) {
   if (!chatId || !userId || !text) return;
 
   if (text === "/start") {
-    const modelKey = await getUserModel(env, userId);
+    const selected = await getUserModel(env, userId);
     await send(env, chatId,
       `Привет 👋\n\nЯ Great Jarvis.\n` +
-      `Текущая модель: ${MODELS[modelKey].title}\n\n` +
-      `Напиши любое сообщение.\n/model — выбрать модель\n/providers — проверить ключи\n/current — текущая модель`
+      `Текущая модель: ${MODELS[selected].title}\n\n` +
+      `Напиши сообщение.\n/model — выбрать модель\n/current — текущая модель\n/providers — подключённые API`
     );
     return;
   }
@@ -305,34 +297,34 @@ async function handleUpdate(update, env) {
   }
 
   if (text === "/current") {
-    const modelKey = await getUserModel(env, userId);
-    await send(env, chatId, `Текущая модель: ${MODELS[modelKey].title}`);
+    const selected = await getUserModel(env, userId);
+    await send(env, chatId, `Текущая модель: ${MODELS[selected].title}`);
     return;
   }
 
   if (text === "/providers") {
     const lines = ["API-сервисы:"];
-    for (const [id, p] of Object.entries(PROVIDERS)) {
+    for (const p of Object.values(PROVIDERS)) {
       lines.push(`${env[p.keyEnv] ? "✅" : "❌"} ${p.title}`);
     }
-    lines.push("", "Диагностика маршрутов:", "/testroutes");
+    lines.push("", "Тест маршрутов: /testroutes");
     await send(env, chatId, lines.join("\n"));
     return;
   }
 
   if (text === "/testroutes") {
     await send(env, chatId,
-      "Открой в браузере:\nhttps://great-jarvis.black-sci-official.workers.dev/test-routes"
+      "Открой:\nhttps://great-jarvis.black-sci-official.workers.dev/test-routes"
     );
     return;
   }
 
   if (text === "/help") {
     await send(env, chatId,
-      "/model — Qwen / DeepSeek / MiMo\n" +
+      "/model — выбрать модель\n" +
       "/current — текущая модель\n" +
-      "/providers — подключённые API\n" +
-      "/testroutes — диагностика free-маршрутов\n" +
+      "/providers — статус API\n" +
+      "/testroutes — диагностика всех free-маршрутов\n" +
       "/help — помощь"
     );
     return;
@@ -341,19 +333,19 @@ async function handleUpdate(update, env) {
   try {
     await telegram(env, "sendChatAction", { chat_id: chatId, action: "typing" });
 
-    const selectedKey = await getUserModel(env, userId);
-    const result = await askSelectedModel(env, selectedKey, text);
+    const selected = await getUserModel(env, userId);
+    const result = await askSelectedModel(env, selected, text);
 
-    const routeInfo = result.fallback
+    const routeSuffix = result.fallback
       ? `\n\n↪️ Запасной маршрут: ${PROVIDERS[result.provider].title}`
       : "";
 
-    await sendLong(env, chatId, result.text + routeInfo);
+    await sendLong(env, chatId, result.text + routeSuffix);
   } catch (e) {
     console.error("CHAT_ERROR", e);
     await send(env, chatId,
       `Не удалось получить ответ.\n\n${friendlyError(e)}\n\n` +
-      `Проверь /providers или открой /test-routes в Worker.`
+      "Проверь /providers и /testroutes."
     );
   }
 }
@@ -372,19 +364,19 @@ async function handleCallback(callback, env) {
     return;
   }
 
-  const modelKey = data.slice("model:".length);
+  const key = data.slice("model:".length);
 
-  if (!MODELS[modelKey]) {
+  if (!MODELS[key]) {
     await answerCallback(env, callbackId, "Неизвестная модель", true);
     return;
   }
 
-  await setUserModel(env, userId, modelKey);
-  await answerCallback(env, callbackId, `Выбрано: ${MODELS[modelKey].short}`);
+  await setUserModel(env, userId, key);
+  await answerCallback(env, callbackId, `Выбрано: ${MODELS[key].title}`);
 
   await edit(env, chatId, messageId,
-    `✅ Выбрано: ${MODELS[modelKey].title}\n\nТеперь просто напиши сообщение.`,
-    modelKeyboard(modelKey)
+    `✅ Выбрано: ${MODELS[key].title}\n\nТеперь просто напиши сообщение.`,
+    modelKeyboard(key)
   );
 }
 
@@ -394,10 +386,12 @@ async function showModelMenu(env, chatId, userId) {
   await telegram(env, "sendMessage", {
     chat_id: chatId,
     text:
-      "Выбери бесплатную модель:\n\n" +
-      "Qwen → OrcaRouter (резерв Token Harbor)\n" +
-      "DeepSeek → TeamoRouter (резерв OrcaRouter)\n" +
-      "MiMo → Token Harbor",
+      "Выбери модель:\n\n" +
+      "Qwen → OrcaRouter\n" +
+      "DeepSeek V4 Pro → TeamoRouter → OrcaRouter\n" +
+      "DeepSeek V4 Flash → TeamoRouter → OrcaRouter → Token Harbor\n" +
+      "MiMo → Token Harbor\n" +
+      "Orca Auto Free → OrcaRouter",
     reply_markup: modelKeyboard(current)
   });
 }
@@ -405,61 +399,51 @@ async function showModelMenu(env, chatId, userId) {
 function modelKeyboard(current) {
   return {
     inline_keyboard: [
-      [{
-        text: `${current === "qwen" ? "✅ " : ""}Qwen 3.8 27B Free`,
-        callback_data: "model:qwen"
-      }],
-      [{
-        text: `${current === "deepseek" ? "✅ " : ""}DeepSeek V4 Pro Free`,
-        callback_data: "model:deepseek"
-      }],
-      [{
-        text: `${current === "mimo" ? "✅ " : ""}MiMo V2.5 Free`,
-        callback_data: "model:mimo"
-      }]
+      [{ text: `${current === "qwen" ? "✅ " : ""}Qwen 3.8 27B`, callback_data: "model:qwen" }],
+      [{ text: `${current === "deepseek_pro" ? "✅ " : ""}DeepSeek V4 Pro`, callback_data: "model:deepseek_pro" }],
+      [{ text: `${current === "deepseek_flash" ? "✅ " : ""}DeepSeek V4 Flash`, callback_data: "model:deepseek_flash" }],
+      [{ text: `${current === "mimo" ? "✅ " : ""}MiMo V2.5`, callback_data: "model:mimo" }],
+      [{ text: `${current === "orca_free" ? "✅ " : ""}Orca Auto Free`, callback_data: "model:orca_free" }]
     ]
   };
 }
 
 async function getUserModel(env, userId) {
-  if (!env.USER_PREFS) return DEFAULT_MODEL_KEY;
-
   try {
     const id = env.USER_PREFS.idFromName(String(userId));
     const stub = env.USER_PREFS.get(id);
     const response = await stub.fetch("https://prefs/get");
     const data = await response.json();
     return MODELS[data?.model] ? data.model : DEFAULT_MODEL_KEY;
-  } catch (e) {
-    console.error("PREF_GET_ERROR", e);
+  } catch {
     return DEFAULT_MODEL_KEY;
   }
 }
 
-async function setUserModel(env, userId, modelKey) {
-  if (!env.USER_PREFS) throw new Error("Durable Object USER_PREFS is not bound");
-
+async function setUserModel(env, userId, key) {
   const id = env.USER_PREFS.idFromName(String(userId));
   const stub = env.USER_PREFS.get(id);
   const response = await stub.fetch("https://prefs/set", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ model: modelKey })
+    body: JSON.stringify({ model: key })
   });
 
-  if (!response.ok) throw new Error("Could not save model selection");
+  if (!response.ok) {
+    throw new Error("Could not save model selection");
+  }
 }
 
-async function askSelectedModel(env, modelKey, userText) {
-  const config = MODELS[modelKey] || MODELS[DEFAULT_MODEL_KEY];
+async function askSelectedModel(env, key, userText) {
+  const config = MODELS[key] || MODELS[DEFAULT_MODEL_KEY];
   const errors = [];
 
   for (let i = 0; i < config.routes.length; i++) {
     const route = config.routes[i];
-    const provider = PROVIDERS[route.provider];
+    const p = PROVIDERS[route.provider];
 
-    if (!env[provider.keyEnv]) {
-      errors.push(`${provider.title}: ${provider.keyEnv} missing`);
+    if (!env[p.keyEnv]) {
+      errors.push(`${p.title}: ${p.keyEnv} missing`);
       continue;
     }
 
@@ -472,14 +456,12 @@ async function askSelectedModel(env, modelKey, userText) {
         fallback: i > 0
       };
     } catch (e) {
-      console.error("ROUTE_ERROR", modelKey, route.provider, route.model, e);
-      errors.push(`${provider.title}: ${e.message}`);
-
+      errors.push(`${p.title}: ${e.message}`);
       if (env.AUTO_FALLBACK === "false") break;
     }
   }
 
-  throw new Error(errors.join(" | ") || "No route is configured");
+  throw new Error(errors.join(" | ") || "No working route");
 }
 
 async function callProvider(env, providerId, model, userText, maxTokens = 1800) {
@@ -518,13 +500,13 @@ async function callProvider(env, providerId, model, userText, maxTokens = 1800) 
   }
 
   if (!response.ok) {
-    const message =
+    const msg =
       data?.error?.message ||
       data?.message ||
       data?.detail ||
       `HTTP ${response.status}`;
 
-    throw new Error(`${response.status}: ${String(message).slice(0, 220)}`);
+    throw new Error(`${response.status}: ${String(msg).slice(0, 240)}`);
   }
 
   const content = data?.choices?.[0]?.message?.content;
@@ -534,11 +516,7 @@ async function callProvider(env, providerId, model, userText, maxTokens = 1800) 
   }
 
   if (Array.isArray(content)) {
-    const text = content
-      .map(x => x?.text || x?.content || "")
-      .join("")
-      .trim();
-
+    const text = content.map(x => x?.text || x?.content || "").join("").trim();
     if (text) return text;
   }
 
@@ -546,22 +524,22 @@ async function callProvider(env, providerId, model, userText, maxTokens = 1800) 
 }
 
 function friendlyError(error) {
-  const message = String(error?.message || error);
+  const msg = String(error?.message || error);
 
-  if (/401|unauthor|invalid.*key/i.test(message)) {
-    return "Один из API-ключей неверный или неактивный.";
+  if (/401|invalid api key|格式不完整/i.test(msg)) {
+    return "Один из API-ключей неверный или скопирован не полностью.";
   }
-  if (/429|quota|limit|rate/i.test(message)) {
-    return "Бесплатная квота выбранного маршрута закончилась или сработал rate limit.";
+  if (/403|consent|verify your email|permission/i.test(msg)) {
+    return "Провайдер требует подтверждение email или согласие на free-модели.";
   }
-  if (/403|free.*enable|consent|opt/i.test(message)) {
-    return "Для этого free-маршрута может требоваться включить бесплатные модели/согласие в кабинете провайдера.";
+  if (/429|free route.*not active|quota|rate limit|limit/i.test(msg)) {
+    return "Free-маршрут сейчас неактивен, закончилась квота или сработал rate limit.";
   }
-  if (/missing/i.test(message)) {
-    return "Не хватает API-ключа одного из нужных провайдеров.";
+  if (/missing/i.test(msg)) {
+    return "Не хватает API-ключа нужного провайдера.";
   }
 
-  return message.slice(0, 450);
+  return msg.slice(0, 500);
 }
 
 async function telegram(env, method, payload) {
@@ -576,7 +554,6 @@ async function telegram(env, method, payload) {
   });
 
   const data = await response.json();
-
   if (!response.ok || !data?.ok) {
     throw new Error(data?.description || `Telegram HTTP ${response.status}`);
   }
