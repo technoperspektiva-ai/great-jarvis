@@ -253,7 +253,101 @@ export class UserPrefs {
       return Response.json({ ok: true });
     }
 
+    if (request.method === "POST" && url.pathname === "/store-token") {
+      const body = await request.json();
+      if (body?.token) {
+        await this.state.storage.put("telegramBotToken", String(body.token));
+      }
+      return Response.json({ ok: true });
+    }
+
+    if (request.method === "GET" && url.pathname === "/notes") {
+      const notes = (await this.state.storage.get("notes")) || [];
+      return Response.json({ notes });
+    }
+
+    if (request.method === "POST" && url.pathname === "/add-note") {
+      const body = await request.json();
+      const notes = (await this.state.storage.get("notes")) || [];
+      const note = {
+        id: crypto.randomUUID(),
+        title: String(body?.title || "Заметка").trim(),
+        text: String(body?.text || "").trim(),
+        source: String(body?.source || "").trim(),
+        createdAt: Date.now()
+      };
+      notes.unshift(note);
+      await this.state.storage.put("notes", notes.slice(0, 100));
+      return Response.json({ ok: true, note });
+    }
+
+    if (request.method === "GET" && url.pathname === "/reminders") {
+      const reminders = (await this.state.storage.get("reminders")) || [];
+      return Response.json({ reminders });
+    }
+
+    if (request.method === "POST" && url.pathname === "/add-reminder") {
+      const body = await request.json();
+      const reminders = (await this.state.storage.get("reminders")) || [];
+      const reminder = {
+        id: crypto.randomUUID(),
+        chatId: String(body?.chatId || ""),
+        text: String(body?.text || "Напоминание").trim(),
+        at: Number(body?.at || 0),
+        createdAt: Date.now(),
+        sent: false
+      };
+
+      if (!reminder.chatId || !Number.isFinite(reminder.at) || reminder.at <= Date.now()) {
+        return Response.json({ ok: false, error: "invalid_reminder" }, { status: 400 });
+      }
+
+      reminders.push(reminder);
+      reminders.sort((a,b) => a.at - b.at);
+      await this.state.storage.put("reminders", reminders);
+
+      const next = reminders.find(x => !x.sent && x.at > Date.now());
+      if (next) await this.state.storage.setAlarm(next.at);
+
+      return Response.json({ ok: true, reminder });
+    }
+
     return new Response("Not found", { status: 404 });
+  }
+
+  async alarm() {
+    const reminders = (await this.state.storage.get("reminders")) || [];
+    const now = Date.now();
+    let changed = false;
+
+    for (const r of reminders) {
+      if (!r.sent && r.at <= now + 1500) {
+        try {
+          const token = await this.state.storage.get("telegramBotToken");
+          if (token && r.chatId) {
+            await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                chat_id: r.chatId,
+                text: `⏰ ${r.text}`
+              })
+            });
+          }
+        } catch (e) {
+          console.error("REMINDER_ALARM_ERROR", e);
+        }
+        r.sent = true;
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      await this.state.storage.put("reminders", reminders);
+    }
+
+    const next = reminders.find(x => !x.sent && x.at > now);
+    if (next) await this.state.storage.setAlarm(next.at);
   }
 }
 
@@ -265,7 +359,7 @@ export default {
       return json({
         ok: true,
         name: "great-jarvis",
-        version: "6.0.0",
+        version: "6.2.0",
         telegram: "@greatjarvis_bot",
         providers: providerStatus(env),
         models: Object.fromEntries(
@@ -677,11 +771,135 @@ async function handleUpdate(update, env) {
       "/testroutes — диагностика маршрутов\n" +
       "/visiontest — проверить vision-настройку\n" +
       "/image <описание> — сгенерировать картинку\n" +
+      "/youtube <запрос> — пошук YouTube\n" +
+      "/maps <запрос> — пошук Google Maps\n" +
+      "/save <текст + посилання> — зберегти знахідку\n" +
+      "/saved — показати збережене\n" +
+      "/remind ... — поставити нагадування\n" +
+      "/reminders — активні нагадування\n" +
       "/sticker <описание> — сгенерировать стикер\n" +
       "/reset — очистить память чата\n" +
       "/logout — выйти\n" +
       "/help — помощь\n\n" +
       "Можно отправить фото, голосовое, аудиофайл или запросить стикер."
+    );
+    return;
+  }
+
+  // Assistant tools: reminders, saved finds, YouTube and Maps.
+  const reminderIntent = /^(?:\/remind\b|нагадай\b|напомни\b)/i.test(text);
+  if (reminderIntent) {
+    const parsed = parseSimpleReminder(text);
+    if (!parsed) {
+      await send(env, chatId,
+        "Поки що найнадійніше так:\n«нагадай через 30 хвилин перевірити духовку»\nабо\n«напомни через 2 часа позвонить»."
+      );
+      return;
+    }
+
+    try {
+      const reminder = await addReminder(env, userId, chatId, parsed.text, parsed.at);
+      const when = new Date(reminder.at).toLocaleString("uk-UA", { timeZone: "Europe/Kyiv" });
+      await send(env, chatId, `⏰ Записав. Нагадаю ${when}.\n${reminder.text}`);
+    } catch (e) {
+      await send(env, chatId, `Не вдалося поставити нагадування: ${friendlyError(e)}`);
+    }
+    return;
+  }
+
+  if (text === "/reminders") {
+    const reminders = await getReminders(env, userId);
+    const active = reminders.filter(x => !x.sent);
+    if (!active.length) {
+      await send(env, chatId, "Активних нагадувань немає.");
+      return;
+    }
+    const body = active.slice(0, 20).map((r, i) => {
+      const when = new Date(r.at).toLocaleString("uk-UA", { timeZone: "Europe/Kyiv" });
+      return `${i + 1}. ${when} — ${r.text}`;
+    }).join("\n");
+    await send(env, chatId, `⏰ Нагадування:\n${body}`);
+    return;
+  }
+
+  const saveIntent = parseSaveIntent(text);
+  if (saveIntent !== null) {
+    if (!saveIntent) {
+      await send(env, chatId, "Напиши, що саме зберегти. Наприклад: /save рецепт пасти — https://...");
+      return;
+    }
+
+    const urlMatch = saveIntent.match(/https?:\/\/\S+/i);
+    const source = urlMatch ? urlMatch[0] : "";
+    const noteText = source ? saveIntent.replace(source, "").trim() : saveIntent;
+
+    await addSavedNote(env, userId, {
+      title: noteText.slice(0, 80) || "Збережене",
+      text: noteText,
+      source
+    });
+
+    await send(env, chatId, source ? "💾 Зберіг разом із джерелом." : "💾 Зберіг.");
+    return;
+  }
+
+  if (text === "/saved" || text === "/notes") {
+    const notes = await getSavedNotes(env, userId);
+    if (!notes.length) {
+      await send(env, chatId, "Поки що нічого не збережено.");
+      return;
+    }
+
+    const body = notes.slice(0, 20).map((n, i) => {
+      const source = n.source ? `\n${n.source}` : "";
+      return `${i + 1}. ${n.title}${source}`;
+    }).join("\n\n");
+
+    await sendLong(env, chatId, `💾 Збережене:\n\n${body}`);
+    return;
+  }
+
+  const ytQuery = extractYouTubeIntent(text);
+  if (ytQuery) {
+    const query = normalizeYouTubeQuery(ytQuery);
+
+    try {
+      await telegram(env, "sendChatAction", { chat_id: chatId, action: "typing" });
+
+      const results = await searchYouTube(env, query, 5);
+
+      if (!results.length) {
+        const fallback = buildYouTubeSearchUrl(query);
+        await send(env, chatId,
+          `Нічого конкретного через API не знайшов.\n\nПошук YouTube:\n${fallback}`
+        );
+        return;
+      }
+
+      const lines = results.map((item, i) =>
+        `${i + 1}. ${item.title}\n${item.channel}\nhttps://youtu.be/${item.id}`
+      );
+
+      const heading = looksLikeMusicRequest(text)
+        ? `🎵 Знайшов на YouTube по запиту «${query}»:`
+        : `🎬 Знайшов на YouTube по запиту «${query}»:`;
+
+      await sendLong(env, chatId, `${heading}\n\n${lines.join("\n\n")}`);
+    } catch (e) {
+      const fallback = buildYouTubeSearchUrl(query);
+      await send(env, chatId,
+        `YouTube API зараз не відповів: ${friendlyError(e)}\n\nМожеш поки відкрити пошук:\n${fallback}`
+      );
+    }
+
+    return;
+  }
+
+  const mapsQuery = extractMapsIntent(text);
+  if (mapsQuery) {
+    const url = buildGoogleMapsSearchUrl(mapsQuery);
+    await send(env, chatId,
+      `📍 Ось пошук у Google Maps:\n${url}`
     );
     return;
   }
@@ -1156,6 +1374,208 @@ async function clearChatHistory(env, userId) {
     method: "POST"
   });
   if (!response.ok) throw new Error("Could not clear chat history");
+}
+
+
+async function saveTelegramTokenForUser(env, userId) {
+  try {
+    const id = env.USER_PREFS.idFromName(String(userId));
+    const stub = env.USER_PREFS.get(id);
+    await stub.fetch("https://prefs/store-token", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: env.TELEGRAM_BOT_TOKEN })
+    });
+  } catch (e) {
+    console.error("STORE_TOKEN_ERROR", e);
+  }
+}
+
+async function addSavedNote(env, userId, { title, text, source }) {
+  const id = env.USER_PREFS.idFromName(String(userId));
+  const stub = env.USER_PREFS.get(id);
+  const response = await stub.fetch("https://prefs/add-note", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ title, text, source })
+  });
+  if (!response.ok) throw new Error("Could not save note");
+  return response.json();
+}
+
+async function getSavedNotes(env, userId) {
+  const id = env.USER_PREFS.idFromName(String(userId));
+  const stub = env.USER_PREFS.get(id);
+  const response = await stub.fetch("https://prefs/notes");
+  const data = await response.json();
+  return Array.isArray(data?.notes) ? data.notes : [];
+}
+
+async function addReminder(env, userId, chatId, text, at) {
+  const id = env.USER_PREFS.idFromName(String(userId));
+  const stub = env.USER_PREFS.get(id);
+
+  // Store token in this user Durable Object so alarm() can send Telegram later.
+  await stub.fetch("https://prefs/store-token", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token: env.TELEGRAM_BOT_TOKEN })
+  });
+
+  const response = await stub.fetch("https://prefs/add-reminder", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ chatId, text, at })
+  });
+
+  const data = await response.json();
+  if (!response.ok || !data?.ok) throw new Error(data?.error || "Could not add reminder");
+  return data.reminder;
+}
+
+async function getReminders(env, userId) {
+  const id = env.USER_PREFS.idFromName(String(userId));
+  const stub = env.USER_PREFS.get(id);
+  const response = await stub.fetch("https://prefs/reminders");
+  const data = await response.json();
+  return Array.isArray(data?.reminders) ? data.reminders : [];
+}
+
+function buildYouTubeSearchUrl(query) {
+  return `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
+}
+
+async function searchYouTube(env, query, maxResults = 5) {
+  if (!env.YOUTUBE_API_KEY) {
+    throw new Error("YOUTUBE_API_KEY missing");
+  }
+
+  const params = new URLSearchParams({
+    part: "snippet",
+    type: "video",
+    maxResults: String(Math.max(1, Math.min(maxResults, 10))),
+    q: String(query || "").trim(),
+    key: env.YOUTUBE_API_KEY,
+    safeSearch: "moderate",
+    videoEmbeddable: "true"
+  });
+
+  const response = await fetch(
+    `https://www.googleapis.com/youtube/v3/search?${params.toString()}`
+  );
+
+  let data;
+  try {
+    data = await response.json();
+  } catch {
+    throw new Error(`YouTube API returned non-JSON HTTP ${response.status}`);
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      data?.error?.message ||
+      data?.error?.errors?.[0]?.reason ||
+      `YouTube API HTTP ${response.status}`
+    );
+  }
+
+  const items = Array.isArray(data?.items) ? data.items : [];
+
+  return items
+    .map(item => ({
+      id: item?.id?.videoId,
+      title: decodeHtmlEntities(item?.snippet?.title || ""),
+      channel: decodeHtmlEntities(item?.snippet?.channelTitle || ""),
+      publishedAt: item?.snippet?.publishedAt || ""
+    }))
+    .filter(x => x.id && x.title);
+}
+
+function decodeHtmlEntities(text) {
+  return String(text || "")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+}
+
+function looksLikeMusicRequest(text) {
+  return /музик|музык|пісн|песн|трек|song|music|playlist|плейлист/i.test(String(text || ""));
+}
+
+function normalizeYouTubeQuery(text) {
+  let q = String(text || "").trim();
+
+  q = q.replace(/^\/(?:youtube|yt)\s+/i, "");
+  q = q.replace(/^(?:знайди|найди|порадь|посоветуй)\s*/i, "");
+  q = q.replace(/\b(?:на|в)\s+(?:ютубі|ютубе|youtube)\b/ig, "");
+  q = q.trim();
+
+  if (looksLikeMusicRequest(text) && !/official|audio|music|song|трек|пісн|песн/i.test(q)) {
+    q += " official audio";
+  }
+
+  return q || String(text || "").trim();
+}
+
+function buildGoogleMapsSearchUrl(query) {
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
+}
+
+function extractYouTubeIntent(text) {
+  const t = String(text || "").trim();
+  const m = t.match(/^(?:\/youtube|\/yt)\s+([\s\S]+)$/i);
+  if (m) return m[1].trim();
+
+  if (/(?:знайди|найди|порадь|посоветуй).*(?:ютуб|youtube|відео|видео|музик|музык|трек|пісн|песн)/i.test(t)) {
+    return t;
+  }
+  return null;
+}
+
+function extractMapsIntent(text) {
+  const t = String(text || "").trim();
+  const m = t.match(/^\/maps?\s+([\s\S]+)$/i);
+  if (m) return m[1].trim();
+
+  if (/(?:знайди|найди|покажи|где|де).*(?:кафе|ресторан|аптек|магазин|бар|кофе|кав'яр|кафей|суши|суші|об'єкт|место|місце)/i.test(t)) {
+    return t;
+  }
+  return null;
+}
+
+function parseSimpleReminder(text) {
+  const t = String(text || "").trim();
+  const lower = t.toLowerCase();
+
+  // "через 30 минут/хвилин/мин"
+  let m = lower.match(/(?:через)\s+(\d+)\s*(хвилин|хв|минут|мин|minutes?)/i);
+  if (m) {
+    const minutes = Number(m[1]);
+    const body = t.replace(m[0], "").replace(/^\s*(?:нагадай|напомни)\s*/i, "").trim();
+    return { at: Date.now() + minutes * 60_000, text: body || "Напоминание" };
+  }
+
+  m = lower.match(/(?:через)\s+(\d+)\s*(годин|години|часа|часов|hours?)/i);
+  if (m) {
+    const hours = Number(m[1]);
+    const body = t.replace(m[0], "").replace(/^\s*(?:нагадай|напомни)\s*/i, "").trim();
+    return { at: Date.now() + hours * 3600_000, text: body || "Напоминание" };
+  }
+
+  return null;
+}
+
+function parseSaveIntent(text) {
+  const t = String(text || "").trim();
+  if (/^(?:\/save|\/note)\s+/i.test(t)) {
+    return t.replace(/^(?:\/save|\/note)\s+/i, "").trim();
+  }
+  if (/^(?:запиши|збережи|сохрани)\b/i.test(t)) {
+    return t.replace(/^(?:запиши|збережи|сохрани)\b[:\s-]*/i, "").trim();
+  }
+  return null;
 }
 
 async function isAuthenticated(env, userId) {

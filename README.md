@@ -1,4 +1,4 @@
-# Great Jarvis v6.0
+# Great Jarvis v6.2
 
 Telegram: `@greatjarvis_bot`
 
@@ -333,3 +333,61 @@ Changes:
 - photo and voice answers use the same conversational delivery style.
 
 The splitting is deterministic per response text, so it feels varied without relying on unstable randomness.
+
+
+## v6.1 — assistant tools
+
+Added:
+
+- YouTube search links:
+  `/youtube lo-fi hip hop`
+  or natural requests like "знайди відео про..."
+
+- Google Maps search links:
+  `/maps кафе поруч`
+  or natural requests like "знайди кафе..."
+
+- Saved finds / notes:
+  `/save рецепт пасти https://example.com`
+  `/saved`
+
+- Real Telegram reminders using Durable Object Alarms:
+  `нагадай через 30 хвилин перевірити духовку`
+  `напомни через 2 часа позвонить`
+  `/reminders`
+
+Notes and reminders are stored per Telegram user ID in the same Durable Object used for chat memory.
+
+No D1 is required.
+
+Important:
+- YouTube and Google Maps currently open precise search URLs.
+- For ranked video results, ratings, place opening hours, reviews, etc. add a dedicated search/Places API later.
+- Reminder alarms send directly through Telegram using the saved bot token.
+
+
+## v6.2 — real YouTube Data API v3 search
+
+Jarvis now uses the YouTube Data API instead of returning only a generic search link.
+
+Cloudflare secret required:
+
+```bash
+npx wrangler secret put YOUTUBE_API_KEY
+```
+
+Then paste your YouTube Data API v3 key.
+
+Supported:
+- `/youtube qwen tutorial`
+- `/yt best iphone camera test`
+- `знайди відео про Cloudflare Workers`
+- `порадь музику для вечора`
+- `найди песню Depeche Mode Enjoy the Silence`
+
+Jarvis returns up to 5 concrete videos:
+- title
+- channel
+- direct `youtu.be` URL
+
+If the API is unavailable or the quota is exhausted, Jarvis falls back to a normal YouTube search URL.
