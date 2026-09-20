@@ -265,7 +265,7 @@ export default {
       return json({
         ok: true,
         name: "great-jarvis",
-        version: "5.7.0",
+        version: "5.8.0",
         telegram: "@greatjarvis_bot",
         providers: providerStatus(env),
         models: Object.fromEntries(
@@ -1269,13 +1269,70 @@ async function telegramPhotoToDataUrl(env, fileId) {
   const response = await fetch(
     `https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${filePath}`
   );
-  if (!response.ok) throw new Error(`Telegram photo download HTTP ${response.status}`);
+  if (!response.ok) {
+    throw new Error(`Telegram photo download HTTP ${response.status}`);
+  }
 
   const bytes = new Uint8Array(await response.arrayBuffer());
-  const contentType = response.headers.get("content-type") || "image/jpeg";
-  const base64 = bytesToBase64(bytes);
 
+  // Telegram may return application/octet-stream even for normal photos.
+  // Vision APIs require a valid image/* MIME in the data URL, so infer it.
+  let contentType = String(response.headers.get("content-type") || "").toLowerCase();
+
+  if (!contentType.startsWith("image/")) {
+    contentType = inferImageMime(filePath, bytes);
+  }
+
+  const base64 = bytesToBase64(bytes);
   return `data:${contentType};base64,${base64}`;
+}
+
+function inferImageMime(filePath, bytes) {
+  const path = String(filePath || "").toLowerCase();
+
+  if (path.endsWith(".png")) return "image/png";
+  if (path.endsWith(".webp")) return "image/webp";
+  if (path.endsWith(".gif")) return "image/gif";
+  if (path.endsWith(".jpg") || path.endsWith(".jpeg")) return "image/jpeg";
+
+  // PNG: 89 50 4E 47 0D 0A 1A 0A
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47
+  ) {
+    return "image/png";
+  }
+
+  // JPEG: FF D8 FF
+  if (
+    bytes.length >= 3 &&
+    bytes[0] === 0xff &&
+    bytes[1] === 0xd8 &&
+    bytes[2] === 0xff
+  ) {
+    return "image/jpeg";
+  }
+
+  // WEBP: RIFF....WEBP
+  if (
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) {
+    return "image/webp";
+  }
+
+  // Telegram compressed photos are overwhelmingly JPEG.
+  return "image/jpeg";
 }
 
 function bytesToBase64(bytes) {

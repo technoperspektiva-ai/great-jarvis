@@ -1,4 +1,4 @@
-# Great Jarvis v5.7
+# Great Jarvis v5.8
 
 Telegram: `@greatjarvis_bot`
 
@@ -277,3 +277,26 @@ The last 24 user/assistant messages are stored in the user's Durable Object and 
 included in future text-model requests.
 
 Photo analysis results and voice-message transcriptions are also added to memory.
+
+
+## v5.8 vision MIME fix
+
+Telegram can return uploaded photos as:
+
+`application/octet-stream`
+
+even when the file is actually JPEG/PNG/WEBP.
+
+Vision providers reject that MIME type.
+
+Great Jarvis now detects the real image MIME from:
+1. Telegram file extension
+2. file signature / magic bytes
+
+Supported detection:
+- JPEG
+- PNG
+- WEBP
+- GIF
+
+Unknown Telegram photo payloads fall back to `image/jpeg`.
