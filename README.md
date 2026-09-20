@@ -1,4 +1,4 @@
-# Great Jarvis v6.2
+# Great Jarvis v6.3
 
 Telegram: `@greatjarvis_bot`
 
@@ -391,3 +391,22 @@ Jarvis returns up to 5 concrete videos:
 - direct `youtu.be` URL
 
 If the API is unavailable or the quota is exhausted, Jarvis falls back to a normal YouTube search URL.
+
+
+## v6.3 — YouTube natural-language routing fix
+
+Fixed cases where natural requests such as:
+- "скинь відео з ютуба"
+- "знайди мені щось цікаве на YouTube"
+- "порадь музику"
+- "дай трек"
+- "покажи відео про Minecraft"
+
+were accidentally sent to the normal text model.
+
+YouTube/media intent is now intercepted BEFORE normal LLM chat.
+
+Added:
+`/youtube-status`
+
+It reports whether `YOUTUBE_API_KEY` is present in Cloudflare Secrets.

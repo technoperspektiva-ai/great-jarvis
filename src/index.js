@@ -359,7 +359,7 @@ export default {
       return json({
         ok: true,
         name: "great-jarvis",
-        version: "6.2.0",
+        version: "6.3.0",
         telegram: "@greatjarvis_bot",
         providers: providerStatus(env),
         models: Object.fromEntries(
@@ -772,6 +772,7 @@ async function handleUpdate(update, env) {
       "/visiontest — проверить vision-настройку\n" +
       "/image <описание> — сгенерировать картинку\n" +
       "/youtube <запрос> — пошук YouTube\n" +
+      "/youtube-status — перевірити YouTube API\n" +
       "/maps <запрос> — пошук Google Maps\n" +
       "/save <текст + посилання> — зберегти знахідку\n" +
       "/saved — показати збережене\n" +
@@ -856,6 +857,17 @@ async function handleUpdate(update, env) {
     }).join("\n\n");
 
     await sendLong(env, chatId, `💾 Збережене:\n\n${body}`);
+    return;
+  }
+
+  if (text === "/youtube-status") {
+    await send(
+      env,
+      chatId,
+      env.YOUTUBE_API_KEY
+        ? "✅ YOUTUBE_API_KEY подключён. YouTube-поиск активен."
+        : "❌ YOUTUBE_API_KEY не задан в Cloudflare Secrets."
+    );
     return;
   }
 
@@ -1508,32 +1520,54 @@ function normalizeYouTubeQuery(text) {
   let q = String(text || "").trim();
 
   q = q.replace(/^\/(?:youtube|yt)\s+/i, "");
-  q = q.replace(/^(?:знайди|найди|порадь|посоветуй)\s*/i, "");
-  q = q.replace(/\b(?:на|в)\s+(?:ютубі|ютубе|youtube)\b/ig, "");
-  q = q.trim();
 
-  if (looksLikeMusicRequest(text) && !/official|audio|music|song|трек|пісн|песн/i.test(q)) {
+  // Remove conversational wrappers while preserving the actual subject.
+  q = q
+    .replace(/\b(?:youtube|ютуб|ютюб|ютубі|ютубе)\b/ig, " ")
+    .replace(/^(?:знайди|найди|покажи|скинь|кинь|дай|порадь|посоветуй|підбери|подбери|включи|увімкни)\s+(?:мені|мне)?\s*/i, "")
+    .replace(/\b(?:відео|видео|ролик|кліп|клип)\s+(?:про|о|по)?\s*/ig, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!q) q = String(text || "").trim();
+
+  if (
+    looksLikeMusicRequest(text) &&
+    !/official|audio|music|song|трек|пісн|песн|live|lyrics|клип|кліп/i.test(q)
+  ) {
     q += " official audio";
   }
 
-  return q || String(text || "").trim();
+  return q;
 }
-
 function buildGoogleMapsSearchUrl(query) {
   return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
 }
 
 function extractYouTubeIntent(text) {
   const t = String(text || "").trim();
-  const m = t.match(/^(?:\/youtube|\/yt)\s+([\s\S]+)$/i);
-  if (m) return m[1].trim();
+  if (!t) return null;
 
-  if (/(?:знайди|найди|порадь|посоветуй).*(?:ютуб|youtube|відео|видео|музик|музык|трек|пісн|песн)/i.test(t)) {
-    return t;
-  }
+  const cmd = t.match(/^\/(?:youtube|yt)\s+([\s\S]+)$/i);
+  if (cmd) return cmd[1].trim();
+
+  const hasYoutubeWord =
+    /\b(?:youtube|youtu\.be|ютуб|ютюб|ютубі|ютубе)\b/i.test(t);
+
+  const hasMediaWord =
+    /\b(?:відео|видео|ролик|кліп|клип|музика|музыка|трек|пісня|песня|song|music|playlist|плейлист)\b/i.test(t);
+
+  const hasAction =
+    /\b(?:знайди|найди|покажи|скинь|кинь|дай|порадь|посоветуй|підбери|подбери|включи|увімкни|хочу|хотів|хочу послухати|хочу посмотреть)\b/i.test(t);
+
+  // Any explicit YouTube mention should route to YouTube search.
+  if (hasYoutubeWord) return t;
+
+  // Natural requests for videos/music should also route there.
+  if (hasMediaWord && hasAction) return t;
+
   return null;
 }
-
 function extractMapsIntent(text) {
   const t = String(text || "").trim();
   const m = t.match(/^\/maps?\s+([\s\S]+)$/i);
