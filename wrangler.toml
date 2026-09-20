@@ -6,11 +6,10 @@ compatibility_date = "2026-09-20"
 SYSTEM_PROMPT = "Ты Great Jarvis — полезный AI-ассистент в Telegram. Отвечай на языке пользователя, понятно, естественно и по делу."
 AUTO_FALLBACK = "true"
 
-# ОБЯЗАТЕЛЬНО создайте KV и вставьте ID:
-# npx wrangler kv namespace create USER_PREFS
-#
-# Затем раскомментируйте:
-#
-# [[kv_namespaces]]
-# binding = "USER_PREFS"
-# id = "PASTE_KV_NAMESPACE_ID_HERE"
+[[durable_objects.bindings]]
+name = "USER_PREFS"
+class_name = "UserPrefs"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["UserPrefs"]

@@ -1,131 +1,97 @@
-# Great Jarvis — Multi Router v2
+# Great Jarvis v3 — Free Models
 
-Telegram: `@greatjarvis_bot`
+Telegram bot: `@greatjarvis_bot`
 
-Поддержаны:
+This build is focused on three free models and uses exact provider-specific model IDs.
 
-- Token Harbor — `https://tokenharbor.ai/v1`
-- TeamoRouter — `https://api.teamorouter.com/v1`
-- OrcaRouter — `https://api.orcarouter.ai/v1`
+## Models
 
-Бот сам получает `/v1/models`, показывает модели кнопками и хранит выбор каждого Telegram-пользователя в Cloudflare KV.
+### Qwen 3.8 27B Free
+Primary:
+- Provider: OrcaRouter
+- Model: `qwen/qwen3.8-27b-free`
 
-## 1. Cloudflare Secrets
+Fallback:
+- Provider: Token Harbor
+- Model: `qwen3.8-27b:free`
 
-В `Workers & Pages -> great-jarvis -> Settings -> Variables and Secrets` добавь:
+### DeepSeek V4 Pro Free
+Primary:
+- Provider: TeamoRouter
+- Model: `deepseek-v4-pro-free`
 
-```text
-TELEGRAM_BOT_TOKEN
-TELEGRAM_WEBHOOK_SECRET
-TOKENHARBOR_API_KEY
-TEAMOROUTER_API_KEY
-ORCAROUTER_API_KEY
-```
+Fallback:
+- Provider: OrcaRouter
+- Model: `deepseek/deepseek-v4-pro-free`
 
-Необязательно подключать все три API сразу. Бот показывает статус через `/providers`.
+### MiMo V2.5 Free
+- Provider: Token Harbor
+- Model: `mimo-v2.5:free`
 
-## 2. Cloudflare KV — нужен для запоминания выбора модели
+## Cloudflare Secrets
 
-В терминале проекта:
+Add these in:
+Cloudflare -> Workers & Pages -> great-jarvis -> Settings -> Variables and Secrets
+
+Required for Telegram:
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_WEBHOOK_SECRET`
+
+Provider keys:
+- `TOKENHARBOR_API_KEY`
+- `TEAMOROUTER_API_KEY`
+- `ORCAROUTER_API_KEY`
+
+You do NOT need `OPENAI_API_KEY`.
+
+## Deploy
 
 ```bash
 npm install
 npx wrangler login
-npx wrangler kv namespace create USER_PREFS
-```
-
-Wrangler вернёт ID. В `wrangler.toml` раскомментируй:
-
-```toml
-[[kv_namespaces]]
-binding = "USER_PREFS"
-id = "ТВОЙ_KV_ID"
-```
-
-Без KV бот сможет общаться через первый подключённый провайдер, но выбор модели кнопкой не будет сохраняться.
-
-## 3. Deploy
-
-```bash
 npm run deploy
 ```
 
-## 4. Webhook — с телефона одной ссылкой
+The Durable Object used for per-user model selection is declared in `wrangler.toml` and is created during deploy. No separate KV namespace is required.
 
-После deploy открой:
+## Setup Telegram webhook
 
-```text
+After deploy open:
+
 https://great-jarvis.black-sci-official.workers.dev/setup-webhook
-```
 
-Нужно увидеть:
+Expected:
+`"ok": true`
 
-```json
-"ok": true
-```
+Check:
 
-Проверка:
-
-```text
 https://great-jarvis.black-sci-official.workers.dev/webhook-info
-```
 
-## Telegram команды
+## Test every route
 
-```text
-/start
-/model
-/provider
-/current
-/providers
-/help
-```
+Open:
 
-### `/model`
+https://great-jarvis.black-sci-official.workers.dev/test-routes
 
-1. Показывает кнопки:
-   - Token Harbor
-   - TeamoRouter
-   - OrcaRouter
-2. После выбора сервиса загружает его `/v1/models`.
-3. Показывает модели страницами по 8.
-4. Выбранный provider + model сохраняется для этого Telegram user ID.
+It sends a very small test to every configured free route and shows which exact provider/model succeeds or fails.
 
-## Auto fallback
+## Telegram
 
-`AUTO_FALLBACK = "true"` включён по умолчанию.
+Commands:
+- `/start`
+- `/model`
+- `/current`
+- `/providers`
+- `/testroutes`
+- `/help`
 
-Если выбранный API/модель дал ошибку, бот пытается следующий подключённый сервис.
+`/model` has three buttons:
+- Qwen 3.8 27B Free
+- DeepSeek V4 Pro Free
+- MiMo V2.5 Free
 
-При запасном маршруте внизу ответа появляется:
+## Important Token Harbor free-model setting
 
-```text
-↪️ Ответ через запасной маршрут: ...
-```
+Token Harbor free routes can require free-model opt-in/consent in the Token Harbor account. If `mimo-v2.5:free` or `qwen3.8-27b:free` returns a permission/consent error, enable free model access in the Token Harbor dashboard first.
 
-Чтобы выключить fallback:
-
-```toml
-[vars]
-AUTO_FALLBACK = "false"
-```
-
-## Проверка подключений
-
-Открой:
-
-```text
-https://great-jarvis.black-sci-official.workers.dev/providers
-```
-
-или в Telegram:
-
-```text
-/providers
-```
-
-`true` / ✅ означает, что соответствующий secret существует в Worker.
-
-## Важно
-
-API-ключи никогда не добавляй в GitHub и не вставляй прямо в `wrangler.toml`. Используй Cloudflare Secrets.
+The bot does not expose provider API keys in diagnostics.
