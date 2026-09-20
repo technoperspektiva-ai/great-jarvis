@@ -1,4 +1,4 @@
-# Great Jarvis v5.3
+# Great Jarvis v5.4
 
 Telegram: `@greatjarvis_bot`
 
@@ -191,3 +191,20 @@ Required secret:
 `GROQ_API_KEY`
 
 Supported Telegram voice `.ogg` files work directly with Groq Whisper.
+
+
+## v5.4 sticker generation
+
+Added live Telegram sticker generation.
+
+How it works:
+- `/sticker кот в очках`
+- or `стикер: ёжик в короне`
+
+The Worker uses Cloudflare Workers AI image generation with `@cf/black-forest-labs/flux-1-schnell`,
+asks for a clean sticker-style image, and uploads it to Telegram using `sendSticker`.
+
+No new external API key is required if the existing Cloudflare AI binding is already configured.
+
+Also includes the v5.3.1 voice fix:
+- Telegram `.oga` voice files are normalized to `.ogg` before Groq transcription.

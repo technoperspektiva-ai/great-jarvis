@@ -236,7 +236,7 @@ export default {
       return json({
         ok: true,
         name: "great-jarvis",
-        version: "5.3.0",
+        version: "5.4.0",
         telegram: "@greatjarvis_bot",
         providers: providerStatus(env),
         models: Object.fromEntries(
@@ -563,7 +563,7 @@ async function handleUpdate(update, env) {
     if (text === env.BOT_ACCESS_PASSWORD) {
       await setAuthenticated(env, userId, true);
       await send(env, chatId,
-        "✅ Доступ открыт.\n\nТеперь можешь писать сообщения, отправлять фото и использовать /model."
+        "✅ Доступ открыт.\n\nТеперь можешь писать сообщения, отправлять фото, голосовые и использовать /model или /sticker."
       );
       return;
     }
@@ -583,7 +583,7 @@ async function handleUpdate(update, env) {
     await send(env, chatId,
       `Привет 👋\n\nЯ Great Jarvis.\n` +
       `Текущая модель: ${MODELS[selected].title}\n\n` +
-      `Можно писать текст или отправлять фото.\n/model — выбрать модель\n/current — текущая модель\n/logout — выйти`
+      `Можно писать текст, отправлять фото, голосовые и делать стикеры.\n/model — выбрать модель\n/sticker <описание> — сгенерировать стикер\n/current — текущая модель\n/logout — выйти`
     );
     return;
   }
@@ -629,10 +629,33 @@ async function handleUpdate(update, env) {
       "/current — текущая модель\n" +
       "/providers — статус API\n" +
       "/testroutes — диагностика маршрутов\n" +
+      "/sticker <описание> — сгенерировать стикер\n" +
       "/logout — выйти\n" +
       "/help — помощь\n\n" +
-      "Можно отправить фото, голосовое или аудиофайл."
+      "Можно отправить фото, голосовое, аудиофайл или запросить стикер."
     );
+    return;
+  }
+
+  const stickerPrompt = extractStickerPrompt(text);
+  if (stickerPrompt !== null) {
+    if (!stickerPrompt) {
+      await send(env, chatId,
+        "Напиши так:\n/sticker кот в очках\nили\nстикер: ёжик в короне"
+      );
+      return;
+    }
+
+    try {
+      await telegram(env, "sendChatAction", { chat_id: chatId, action: "upload_photo" });
+      const stickerBlob = await generateStickerImageBlob(env, stickerPrompt);
+      await sendStickerFile(env, chatId, stickerBlob);
+    } catch (e) {
+      console.error("STICKER_ERROR", e);
+      await send(env, chatId,
+        `Не удалось сгенерировать стикер.\n\n${friendlyError(e)}`
+      );
+    }
     return;
   }
 
@@ -827,6 +850,126 @@ function modelKeyboard(current, statuses = {}) {
   };
 }
 
+
+function extractStickerPrompt(text) {
+  const t = String(text || "").trim();
+  if (!t) return null;
+
+  const cmd = t.match(/^\/sticker(?:@\w+)?(?:\s+([\s\S]*))?$/i);
+  if (cmd) {
+    return (cmd[1] || "").trim();
+  }
+
+  const prefix = t.match(/^(?:sticker|стикер|стікер)\s*[:\-]\s*([\s\S]*)$/i);
+  if (prefix) {
+    return (prefix[1] || "").trim();
+  }
+
+  return null;
+}
+
+async function generateStickerImageBlob(env, prompt) {
+  if (!env.AI) {
+    throw new Error("Cloudflare Workers AI binding is missing");
+  }
+
+  const enhancedPrompt =
+    "Create a clean Telegram sticker style illustration with transparent or plain isolated background. " +
+    "Simple silhouette, readable subject, centered composition, polished sticker aesthetic, no watermarks, no text. " +
+    prompt;
+
+  const result = await env.AI.run("@cf/black-forest-labs/flux-1-schnell", {
+    prompt: enhancedPrompt,
+    width: 512,
+    height: 512,
+    num_steps: 4
+  });
+
+  return normalizeGeneratedImageToBlob(result);
+}
+
+async function normalizeGeneratedImageToBlob(result) {
+  if (!result) {
+    throw new Error("Image model returned empty result");
+  }
+
+  if (typeof Response !== "undefined" && result instanceof Response) {
+    const contentType = result.headers.get("content-type") || "image/png";
+    const bytes = await result.arrayBuffer();
+    return new Blob([bytes], { type: contentType });
+  }
+
+  if (result instanceof Blob) return result;
+
+  if (result instanceof ArrayBuffer) {
+    return new Blob([result], { type: "image/png" });
+  }
+
+  if (result?.buffer instanceof ArrayBuffer) {
+    return new Blob([result.buffer], { type: result.type || "image/png" });
+  }
+
+  if (result?.image) {
+    const img = result.image;
+    if (img instanceof ArrayBuffer) return new Blob([img], { type: "image/png" });
+    if (img instanceof Uint8Array) return new Blob([img], { type: "image/png" });
+    if (typeof img === "string") return dataStringToBlob(img, "image/png");
+  }
+
+  if (result instanceof Uint8Array) {
+    return new Blob([result], { type: "image/png" });
+  }
+
+  if (typeof result === "string") {
+    return dataStringToBlob(result, "image/png");
+  }
+
+  if (result?.result?.image && typeof result.result.image === "string") {
+    return dataStringToBlob(result.result.image, "image/png");
+  }
+
+  throw new Error("Unsupported image result format");
+}
+
+function dataStringToBlob(value, defaultType = "image/png") {
+  const str = String(value || "").trim();
+
+  if (str.startsWith("data:")) {
+    const [meta, b64] = str.split(",", 2);
+    const m = meta.match(/^data:([^;]+);base64$/i);
+    const contentType = m?.[1] || defaultType;
+    const bytes = base64ToBytes(b64 || "");
+    return new Blob([bytes], { type: contentType });
+  }
+
+  const bytes = base64ToBytes(str);
+  return new Blob([bytes], { type: defaultType });
+}
+
+function base64ToBytes(base64) {
+  const binary = atob(base64);
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+  return out;
+}
+
+async function sendStickerFile(env, chatId, blob) {
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  form.append("sticker", blob, "sticker.png");
+
+  const response = await fetch(`${TG}/bot${env.TELEGRAM_BOT_TOKEN}/sendSticker`, {
+    method: "POST",
+    body: form
+  });
+
+  const data = await response.json();
+  if (!response.ok || !data?.ok) {
+    throw new Error(data?.description || `Telegram sendSticker HTTP ${response.status}`);
+  }
+  return data.result;
+}
+
 function cleanVisionText(text) {
   return String(text || "")
     .replace(/^\s*User Safety:\s*safe\s*/i, "")
@@ -875,11 +1018,31 @@ async function transcribeTelegramAudio(env, fileId) {
 
   const blob = await download.blob();
 
-  let filename = filePath.split("/").pop() || "voice.ogg";
-  if (!/\.[a-z0-9]+$/i.test(filename)) filename += ".ogg";
+  const originalName = filePath.split("/").pop() || "voice.ogg";
+  const extMatch = originalName.match(/\.([a-z0-9]+)$/i);
+  const ext = extMatch ? extMatch[1].toLowerCase() : "";
+
+  const supported = new Set([
+    "flac", "mp3", "mp4", "mpeg", "mpga", "m4a",
+    "ogg", "opus", "wav", "webm"
+  ]);
+
+  let filename;
+  if (ext === "oga") {
+    filename = "voice.ogg";
+  } else if (supported.has(ext)) {
+    filename = originalName;
+  } else {
+    filename = "voice.ogg";
+  }
+
+  const raw = await blob.arrayBuffer();
+  const safeBlob = new Blob([raw], {
+    type: ext === "opus" ? "audio/opus" : "audio/ogg"
+  });
 
   const form = new FormData();
-  form.append("file", blob, filename);
+  form.append("file", safeBlob, filename);
   form.append("model", "whisper-large-v3-turbo");
   form.append("response_format", "json");
   form.append("temperature", "0");
