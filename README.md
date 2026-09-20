@@ -1,4 +1,4 @@
-# Great Jarvis v5.1
+# Great Jarvis v5.3
 
 Telegram: `@greatjarvis_bot`
 
@@ -150,3 +150,44 @@ The bot now accepts Telegram photos.
 - Or send a photo with a caption/question.
 - Great Jarvis downloads the Telegram image and sends it to a vision-capable route.
 - Vision fallback currently tries OpenRouter first and NVIDIA NIM second.
+
+
+## v5.2 vision fix
+
+Photo analysis now uses a specific free multimodal model first:
+
+`inclusionai/ling-3.0-flash-vl:free`
+
+Fallback:
+
+`openrouter/free`
+
+This avoids relying on the generic free router as the primary vision path.
+
+Technical labels such as:
+
+`User Safety: safe`
+
+and
+
+`Vision: ...`
+
+are removed from normal Telegram replies.
+
+
+## v5.3 voice support
+
+Telegram voice messages and audio files are now supported.
+
+Flow:
+
+1. Telegram voice/audio is downloaded by the Worker.
+2. Groq Speech-to-Text transcribes it using:
+   `whisper-large-v3-turbo`
+3. The transcription is passed to the currently selected Jarvis model.
+4. The bot returns the normal assistant answer.
+
+Required secret:
+`GROQ_API_KEY`
+
+Supported Telegram voice `.ogg` files work directly with Groq Whisper.

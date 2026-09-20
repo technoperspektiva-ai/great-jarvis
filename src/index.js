@@ -236,7 +236,7 @@ export default {
       return json({
         ok: true,
         name: "great-jarvis",
-        version: "5.1.0",
+        version: "5.3.0",
         telegram: "@greatjarvis_bot",
         providers: providerStatus(env),
         models: Object.fromEntries(
@@ -537,6 +537,8 @@ async function handleUpdate(update, env) {
   const userId = message?.from?.id;
   const text = message?.text?.trim() || message?.caption?.trim() || "";
   const photos = Array.isArray(message?.photo) ? message.photo : [];
+  const voice = message?.voice || null;
+  const audio = message?.audio || null;
 
   if (!chatId || !userId) return;
 
@@ -629,13 +631,39 @@ async function handleUpdate(update, env) {
       "/testroutes — диагностика маршрутов\n" +
       "/logout — выйти\n" +
       "/help — помощь\n\n" +
-      "Также можно отправить фото с подписью или без неё."
+      "Можно отправить фото, голосовое или аудиофайл."
     );
     return;
   }
 
   try {
     await telegram(env, "sendChatAction", { chat_id: chatId, action: "typing" });
+
+    // Voice / audio flow
+    if (voice || audio) {
+      const media = voice || audio;
+      const transcript = await transcribeTelegramAudio(env, media.file_id);
+
+      if (!transcript || !transcript.trim()) {
+        await send(env, chatId, "Не смог разобрать голосовое сообщение.");
+        return;
+      }
+
+      const selected = await getUserModel(env, userId);
+      const result = await askSelectedModel(env, selected, transcript.trim());
+
+      let routeSuffix = "";
+      if (result.globalFallback) {
+        routeSuffix =
+          `\n\n⚠️ Выбранная модель сейчас недоступна.` +
+          `\n✅ Ответил резерв: ${MODELS[result.modelKey].title} · ${PROVIDERS[result.provider].title}`;
+      } else if (result.fallback) {
+        routeSuffix = `\n\n↪️ Запасной маршрут: ${PROVIDERS[result.provider].title}`;
+      }
+
+      await sendLong(env, chatId, result.text + routeSuffix);
+      return;
+    }
 
     // Photo flow
     if (photos.length) {
@@ -644,10 +672,7 @@ async function handleUpdate(update, env) {
       const prompt = text || "Опиши это изображение и ответь на языке пользователя.";
 
       const vision = await askVisionWithFallback(env, imageDataUrl, prompt);
-      await sendLong(env, chatId,
-        vision.text +
-        `\n\n👁️ Vision: ${vision.providerTitle} · ${vision.model}`
-      );
+      await sendLong(env, chatId, cleanVisionText(vision.text));
       return;
     }
 
@@ -802,6 +827,13 @@ function modelKeyboard(current, statuses = {}) {
   };
 }
 
+function cleanVisionText(text) {
+  return String(text || "")
+    .replace(/^\s*User Safety:\s*safe\s*/i, "")
+    .replace(/^\s*Safety:\s*safe\s*/i, "")
+    .trim();
+}
+
 async function isAuthenticated(env, userId) {
   try {
     const id = env.USER_PREFS.idFromName(String(userId));
@@ -823,6 +855,67 @@ async function setAuthenticated(env, userId, authenticated) {
     body: JSON.stringify({ authenticated })
   });
   if (!response.ok) throw new Error("Could not save auth state");
+}
+
+async function transcribeTelegramAudio(env, fileId) {
+  if (!env.GROQ_API_KEY) {
+    throw new Error("GROQ_API_KEY missing for voice transcription");
+  }
+
+  const fileInfo = await telegram(env, "getFile", { file_id: fileId });
+  const filePath = fileInfo?.file_path;
+  if (!filePath) throw new Error("Telegram audio file_path missing");
+
+  const download = await fetch(
+    `https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${filePath}`
+  );
+  if (!download.ok) {
+    throw new Error(`Telegram audio download HTTP ${download.status}`);
+  }
+
+  const blob = await download.blob();
+
+  let filename = filePath.split("/").pop() || "voice.ogg";
+  if (!/\.[a-z0-9]+$/i.test(filename)) filename += ".ogg";
+
+  const form = new FormData();
+  form.append("file", blob, filename);
+  form.append("model", "whisper-large-v3-turbo");
+  form.append("response_format", "json");
+  form.append("temperature", "0");
+
+  const response = await fetch(
+    "https://api.groq.com/openai/v1/audio/transcriptions",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.GROQ_API_KEY}`
+      },
+      body: form
+    }
+  );
+
+  let data;
+  try {
+    data = await response.json();
+  } catch {
+    throw new Error(`Groq transcription HTTP ${response.status}: invalid JSON`);
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      data?.error?.message ||
+      data?.message ||
+      `Groq transcription HTTP ${response.status}`
+    );
+  }
+
+  const transcript = data?.text;
+  if (typeof transcript !== "string" || !transcript.trim()) {
+    throw new Error("Empty transcription");
+  }
+
+  return transcript.trim();
 }
 
 async function telegramPhotoToDataUrl(env, fileId) {
@@ -855,13 +948,13 @@ async function askVisionWithFallback(env, imageDataUrl, prompt) {
   const routes = [
     {
       provider: "openrouter",
-      model: "openrouter/free",
-      title: "OpenRouter"
+      model: "inclusionai/ling-3.0-flash-vl:free",
+      title: "Ling 3.0 Flash VL"
     },
     {
-      provider: "nvidia",
-      model: "nvidia/nemotron-nano-12b-v2-vl",
-      title: "NVIDIA NIM"
+      provider: "openrouter",
+      model: "openrouter/free",
+      title: "OpenRouter Free"
     }
   ];
 
