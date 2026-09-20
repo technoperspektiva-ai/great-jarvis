@@ -202,7 +202,11 @@ export class UserPrefs {
 
     if (request.method === "GET" && url.pathname === "/get") {
       const model = await this.state.storage.get("model");
-      return Response.json({ model: model || DEFAULT_MODEL_KEY });
+      const authenticated = Boolean(await this.state.storage.get("authenticated"));
+      return Response.json({
+        model: model || DEFAULT_MODEL_KEY,
+        authenticated
+      });
     }
 
     if (request.method === "POST" && url.pathname === "/set") {
@@ -212,6 +216,12 @@ export class UserPrefs {
       }
       await this.state.storage.put("model", body.model);
       return Response.json({ ok: true, model: body.model });
+    }
+
+    if (request.method === "POST" && url.pathname === "/auth") {
+      const body = await request.json();
+      await this.state.storage.put("authenticated", Boolean(body?.authenticated));
+      return Response.json({ ok: true, authenticated: Boolean(body?.authenticated) });
     }
 
     return new Response("Not found", { status: 404 });
@@ -226,7 +236,7 @@ export default {
       return json({
         ok: true,
         name: "great-jarvis",
-        version: "5.0.0",
+        version: "5.1.0",
         telegram: "@greatjarvis_bot",
         providers: providerStatus(env),
         models: Object.fromEntries(
@@ -525,16 +535,53 @@ async function handleUpdate(update, env) {
   const message = update.message;
   const chatId = message?.chat?.id;
   const userId = message?.from?.id;
-  const text = message?.text?.trim();
+  const text = message?.text?.trim() || message?.caption?.trim() || "";
+  const photos = Array.isArray(message?.photo) ? message.photo : [];
 
-  if (!chatId || !userId || !text) return;
+  if (!chatId || !userId) return;
+
+  // Access gate
+  const authenticated = await isAuthenticated(env, userId);
+
+  if (!authenticated) {
+    if (text === "/start" || !text) {
+      await send(env, chatId,
+        "🔐 Great Jarvis закрыт паролем.\n\nВведи пароль одним сообщением."
+      );
+      return;
+    }
+
+    if (!env.BOT_ACCESS_PASSWORD) {
+      await send(env, chatId,
+        "❌ В Cloudflare не задан BOT_ACCESS_PASSWORD."
+      );
+      return;
+    }
+
+    if (text === env.BOT_ACCESS_PASSWORD) {
+      await setAuthenticated(env, userId, true);
+      await send(env, chatId,
+        "✅ Доступ открыт.\n\nТеперь можешь писать сообщения, отправлять фото и использовать /model."
+      );
+      return;
+    }
+
+    await send(env, chatId, "❌ Неверный пароль.");
+    return;
+  }
+
+  if (text === "/logout") {
+    await setAuthenticated(env, userId, false);
+    await send(env, chatId, "🔒 Доступ закрыт. Для входа снова введи пароль.");
+    return;
+  }
 
   if (text === "/start") {
     const selected = await getUserModel(env, userId);
     await send(env, chatId,
       `Привет 👋\n\nЯ Great Jarvis.\n` +
       `Текущая модель: ${MODELS[selected].title}\n\n` +
-      `Напиши сообщение.\n/model — выбрать модель\n/current — текущая модель\n/providers — подключённые API`
+      `Можно писать текст или отправлять фото.\n/model — выбрать модель\n/current — текущая модель\n/logout — выйти`
     );
     return;
   }
@@ -574,27 +621,38 @@ async function handleUpdate(update, env) {
     return;
   }
 
-  if (text === "/naramodels") {
-    await send(env, chatId,
-      "Модели NaraRouter для твоего ключа:\nhttps://great-jarvis.black-sci-official.workers.dev/nara-models"
-    );
-    return;
-  }
-
   if (text === "/help") {
     await send(env, chatId,
       "/model — выбрать модель\n" +
       "/current — текущая модель\n" +
       "/providers — статус API\n" +
-      "/testroutes — диагностика всех free-маршрутов\n" +
-      "/naramodels — модели NaraRouter для твоего ключа\n" +
-      "/help — помощь"
+      "/testroutes — диагностика маршрутов\n" +
+      "/logout — выйти\n" +
+      "/help — помощь\n\n" +
+      "Также можно отправить фото с подписью или без неё."
     );
     return;
   }
 
   try {
     await telegram(env, "sendChatAction", { chat_id: chatId, action: "typing" });
+
+    // Photo flow
+    if (photos.length) {
+      const best = photos[photos.length - 1];
+      const imageDataUrl = await telegramPhotoToDataUrl(env, best.file_id);
+      const prompt = text || "Опиши это изображение и ответь на языке пользователя.";
+
+      const vision = await askVisionWithFallback(env, imageDataUrl, prompt);
+      await sendLong(env, chatId,
+        vision.text +
+        `\n\n👁️ Vision: ${vision.providerTitle} · ${vision.model}`
+      );
+      return;
+    }
+
+    // Text flow
+    if (!text) return;
 
     const selected = await getUserModel(env, userId);
     const result = await askSelectedModel(env, selected, text);
@@ -618,7 +676,6 @@ async function handleUpdate(update, env) {
     );
   }
 }
-
 async function handleCallback(callback, env) {
   const callbackId = callback.id;
   const chatId = callback.message?.chat?.id;
@@ -627,6 +684,11 @@ async function handleCallback(callback, env) {
   const data = callback.data || "";
 
   if (!callbackId || !chatId || !userId) return;
+
+  if (!(await isAuthenticated(env, userId))) {
+    await answerCallback(env, callbackId, "Сначала введи пароль.", true);
+    return;
+  }
 
   if (!data.startsWith("model:")) {
     await answerCallback(env, callbackId, "Неизвестное действие");
@@ -738,6 +800,151 @@ function modelKeyboard(current, statuses = {}) {
       callback_data: `model:${key}`
     }])
   };
+}
+
+async function isAuthenticated(env, userId) {
+  try {
+    const id = env.USER_PREFS.idFromName(String(userId));
+    const stub = env.USER_PREFS.get(id);
+    const response = await stub.fetch("https://prefs/get");
+    const data = await response.json();
+    return Boolean(data?.authenticated);
+  } catch {
+    return false;
+  }
+}
+
+async function setAuthenticated(env, userId, authenticated) {
+  const id = env.USER_PREFS.idFromName(String(userId));
+  const stub = env.USER_PREFS.get(id);
+  const response = await stub.fetch("https://prefs/auth", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ authenticated })
+  });
+  if (!response.ok) throw new Error("Could not save auth state");
+}
+
+async function telegramPhotoToDataUrl(env, fileId) {
+  const fileInfo = await telegram(env, "getFile", { file_id: fileId });
+  const filePath = fileInfo?.file_path;
+  if (!filePath) throw new Error("Telegram file_path missing");
+
+  const response = await fetch(
+    `https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${filePath}`
+  );
+  if (!response.ok) throw new Error(`Telegram photo download HTTP ${response.status}`);
+
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  const contentType = response.headers.get("content-type") || "image/jpeg";
+  const base64 = bytesToBase64(bytes);
+
+  return `data:${contentType};base64,${base64}`;
+}
+
+function bytesToBase64(bytes) {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+async function askVisionWithFallback(env, imageDataUrl, prompt) {
+  const routes = [
+    {
+      provider: "openrouter",
+      model: "openrouter/free",
+      title: "OpenRouter"
+    },
+    {
+      provider: "nvidia",
+      model: "nvidia/nemotron-nano-12b-v2-vl",
+      title: "NVIDIA NIM"
+    }
+  ];
+
+  const errors = [];
+
+  for (const route of routes) {
+    const provider = PROVIDERS[route.provider];
+    if (!providerConnected(env, provider)) continue;
+
+    try {
+      const text = await callVisionProvider(
+        env,
+        route.provider,
+        route.model,
+        imageDataUrl,
+        prompt
+      );
+
+      return {
+        text,
+        provider: route.provider,
+        providerTitle: route.title,
+        model: route.model
+      };
+    } catch (e) {
+      errors.push(`${route.title}: ${String(e?.message || e)}`);
+    }
+  }
+
+  throw new Error(errors.join(" | ") || "No vision route available");
+}
+
+async function callVisionProvider(env, providerId, model, imageDataUrl, prompt) {
+  const provider = PROVIDERS[providerId];
+  if (!providerConnected(env, provider)) {
+    throw new Error(`${providerSecretName(provider)} missing`);
+  }
+
+  if (provider.native) {
+    throw new Error("Native Workers AI vision route is not configured in this build");
+  }
+
+  const response = await fetch(`${provider.base}/chat/completions`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env[provider.keyEnv]}`,
+      "Content-Type": "application/json",
+      ...(providerId === "openrouter"
+        ? {
+            "HTTP-Referer": "https://great-jarvis.black-sci-official.workers.dev",
+            "X-Title": "Great Jarvis"
+          }
+        : {})
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: prompt },
+            { type: "image_url", image_url: { url: imageDataUrl } }
+          ]
+        }
+      ],
+      max_tokens: 1200
+    })
+  });
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(
+      data?.error?.message ||
+      data?.message ||
+      `HTTP ${response.status}`
+    );
+  }
+
+  const content = data?.choices?.[0]?.message?.content;
+  if (typeof content === "string" && content.trim()) return content.trim();
+
+  throw new Error("Empty vision response");
 }
 
 async function getUserModel(env, userId) {

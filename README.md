@@ -1,4 +1,4 @@
-# Great Jarvis v5
+# Great Jarvis v5.1
 
 Telegram: `@greatjarvis_bot`
 
@@ -120,3 +120,33 @@ Telegram commands:
 - `/providers`
 - `/testroutes`
 - `/help`
+
+
+## v5.1
+
+### Password access
+
+Add Cloudflare Secret:
+
+```text
+BOT_ACCESS_PASSWORD
+```
+
+Set its value to:
+
+```text
+anastasia
+```
+
+On first `/start` the bot asks for the password.
+Successful login is remembered per Telegram user in the Durable Object.
+Use `/logout` to close access again.
+
+### Photo support
+
+The bot now accepts Telegram photos.
+
+- Send a photo by itself.
+- Or send a photo with a caption/question.
+- Great Jarvis downloads the Telegram image and sends it to a vision-capable route.
+- Vision fallback currently tries OpenRouter first and NVIDIA NIM second.
