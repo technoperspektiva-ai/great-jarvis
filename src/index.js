@@ -236,7 +236,7 @@ export default {
       return json({
         ok: true,
         name: "great-jarvis",
-        version: "5.4.0",
+        version: "5.4.1",
         telegram: "@greatjarvis_bot",
         providers: providerStatus(env),
         models: Object.fromEntries(
@@ -879,10 +879,7 @@ async function generateStickerImageBlob(env, prompt) {
     prompt;
 
   const result = await env.AI.run("@cf/black-forest-labs/flux-1-schnell", {
-    prompt: enhancedPrompt,
-    width: 512,
-    height: 512,
-    num_steps: 4
+    prompt: enhancedPrompt
   });
 
   return normalizeGeneratedImageToBlob(result);

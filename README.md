@@ -1,4 +1,4 @@
-# Great Jarvis v5.4
+# Great Jarvis v5.4.1
 
 Telegram: `@greatjarvis_bot`
 
@@ -208,3 +208,8 @@ No new external API key is required if the existing Cloudflare AI binding is alr
 
 Also includes the v5.3.1 voice fix:
 - Telegram `.oga` voice files are normalized to `.ogg` before Groq transcription.
+
+
+## v5.4.1 sticker fix
+
+Fixed Cloudflare Workers AI sticker generation by removing unsupported image parameters (`width`, `height`, `num_steps`) from the `@cf/black-forest-labs/flux-1-schnell` call.
