@@ -1,4 +1,4 @@
-# Great Jarvis v4.3
+# Great Jarvis v4.5
 
 Updated free-model routing.
 
@@ -92,3 +92,22 @@ A model is usable if at least one of its routes returns `ok: true`.
 - `/providers`
 - `/testroutes`
 - `/help`
+
+
+## v4.4 diagnostics fix
+
+`/test-routes` now checks all routes in parallel instead of sequentially.
+Each provider route gets a 7-second timeout, so one slow API can no longer block
+the whole diagnostics page.
+
+
+## v4.5 resilient routing
+
+- `/model` shows live status:
+  - ✅ available
+  - ❌ unavailable
+- A broken provider does not stop the bot.
+- The selected model is tried first.
+- If all routes for the selected model fail, Great Jarvis automatically tries
+  other configured models until one succeeds.
+- `/current` also shows the live availability status.

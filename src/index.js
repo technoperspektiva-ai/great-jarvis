@@ -126,7 +126,7 @@ export default {
       return json({
         ok: true,
         name: "great-jarvis",
-        version: "4.3.0",
+        version: "4.5.0",
         telegram: "@greatjarvis_bot",
         providers: providerStatus(env),
         models: Object.fromEntries(
@@ -298,66 +298,73 @@ async function naraModels(env) {
 }
 
 async function testRoutes(env) {
-  const tests = [];
+  const jobs = [];
 
   for (const [key, cfg] of Object.entries(MODELS)) {
     for (const route of cfg.routes) {
       const provider = PROVIDERS[route.provider];
 
-      if (!env[provider.keyEnv]) {
-        tests.push({
-          model: cfg.title,
-          provider: provider.title,
-          route_model: route.model,
-          ok: false,
-          skipped: true,
-          error: `${provider.keyEnv} missing`
-        });
-        continue;
-      }
+      jobs.push((async () => {
+        if (!env[provider.keyEnv]) {
+          return {
+            model: cfg.title,
+            provider: provider.title,
+            route_model: route.model,
+            ok: false,
+            skipped: true,
+            error: `${provider.keyEnv} missing`
+          };
+        }
 
-      try {
         const started = Date.now();
-        const text = await callProvider(env, route.provider, route.model, "Reply with exactly: OK", 16);
-        tests.push({
-          model: cfg.title,
-          provider: provider.title,
-          route_model: route.model,
-          ok: true,
-          ms: Date.now() - started,
-          response: text.slice(0, 60)
-        });
-      } catch (e) {
-        tests.push({
-          model: cfg.title,
-          provider: provider.title,
-          route_model: route.model,
-          ok: false,
-          error: String(e.message || e).slice(0, 320)
-        });
-      }
+
+        try {
+          const text = await callProvider(
+            env,
+            route.provider,
+            route.model,
+            "Reply with exactly: OK",
+            16,
+            7000
+          );
+
+          return {
+            model: cfg.title,
+            provider: provider.title,
+            route_model: route.model,
+            ok: true,
+            ms: Date.now() - started,
+            response: text.slice(0, 60)
+          };
+        } catch (e) {
+          return {
+            model: cfg.title,
+            provider: provider.title,
+            route_model: route.model,
+            ok: false,
+            ms: Date.now() - started,
+            error: String(e?.message || e).slice(0, 320)
+          };
+        }
+      })());
     }
   }
 
-  const groups = {};
-  for (const t of tests) {
-    groups[t.model] ||= [];
-    groups[t.model].push(t);
-  }
+  const tests = await Promise.all(jobs);
 
-  const summary = {};
-  for (const [model, items] of Object.entries(groups)) {
-    summary[model] = items.some(x => x.ok);
+  const modelStatus = {};
+  for (const t of tests) {
+    if (!(t.model in modelStatus)) modelStatus[t.model] = false;
+    if (t.ok) modelStatus[t.model] = true;
   }
 
   return json({
-    ok: Object.values(summary).some(Boolean),
-    model_status: summary,
-    note: "A model is usable when at least one route for it is OK.",
+    ok: Object.values(modelStatus).some(Boolean),
+    model_status: modelStatus,
+    note: "All routes were checked in parallel. Each route has a 7 second timeout.",
     tests
   });
 }
-
 async function handleUpdate(update, env) {
   if (update.callback_query) {
     await handleCallback(update.callback_query, env);
@@ -388,7 +395,9 @@ async function handleUpdate(update, env) {
 
   if (text === "/current") {
     const selected = await getUserModel(env, userId);
-    await send(env, chatId, `Текущая модель: ${MODELS[selected].title}`);
+    const statuses = await getModelStatuses(env);
+    const status = statuses[selected] ? "✅ доступна" : "❌ недоступна";
+    await send(env, chatId, `Текущая модель: ${MODELS[selected].title}\nСтатус: ${status}`);
     return;
   }
 
@@ -434,9 +443,15 @@ async function handleUpdate(update, env) {
     const selected = await getUserModel(env, userId);
     const result = await askSelectedModel(env, selected, text);
 
-    const routeSuffix = result.fallback
-      ? `\n\n↪️ Запасной маршрут: ${PROVIDERS[result.provider].title}`
-      : "";
+    let routeSuffix = "";
+
+    if (result.globalFallback) {
+      routeSuffix =
+        `\n\n⚠️ Выбранная модель сейчас недоступна.` +
+        `\n✅ Ответил резерв: ${MODELS[result.modelKey].title} · ${PROVIDERS[result.provider].title}`;
+    } else if (result.fallback) {
+      routeSuffix = `\n\n↪️ Запасной маршрут: ${PROVIDERS[result.provider].title}`;
+    }
 
     await sendLong(env, chatId, result.text + routeSuffix);
   } catch (e) {
@@ -472,46 +487,74 @@ async function handleCallback(callback, env) {
   await setUserModel(env, userId, key);
   await answerCallback(env, callbackId, `Выбрано: ${MODELS[key].title}`);
 
+  const statuses = await getModelStatuses(env);
+
   await edit(env, chatId, messageId,
-    `✅ Выбрано: ${MODELS[key].title}\n\nТеперь просто напиши сообщение.`,
-    modelKeyboard(key)
+    `✅ Выбрано: ${MODELS[key].title}\n\nЕсли модель станет недоступна, бот автоматически использует рабочий резерв.`,
+    modelKeyboard(key, statuses)
   );
+}
+
+async function getModelStatuses(env) {
+  const entries = Object.entries(MODELS);
+
+  const results = await Promise.all(entries.map(async ([key, cfg]) => {
+    const routeChecks = await Promise.all(cfg.routes.map(async route => {
+      const provider = PROVIDERS[route.provider];
+      if (!env[provider.keyEnv]) return false;
+
+      try {
+        await callProvider(
+          env,
+          route.provider,
+          route.model,
+          "Reply with exactly: OK",
+          8,
+          3500
+        );
+        return true;
+      } catch {
+        return false;
+      }
+    }));
+
+    return [key, routeChecks.some(Boolean)];
+  }));
+
+  return Object.fromEntries(results);
 }
 
 async function showModelMenu(env, chatId, userId) {
   const current = await getUserModel(env, userId);
+  const statuses = await getModelStatuses(env);
 
   await telegram(env, "sendMessage", {
     chat_id: chatId,
     text:
       "Выбери модель:\n\n" +
-      "Qwen → OrcaRouter\n" +
-      "DeepSeek V4 Pro → TeamoRouter → OrcaRouter\n" +
-      "DeepSeek V4 Flash → TeamoRouter → OrcaRouter → Token Harbor\n" +
-      "MiMo → Token Harbor\n" +
-      "TH-Rudder → Token Harbor\n" +
-      "Mistral Large → NaraRouter\n" +
-      "Mistral Medium 3.5 → NaraRouter\n" +
-      "Tencent HY3 Free → NaraRouter\n" +
-      "Nara Auto → NaraRouter\n" +
-      "Orca Auto Free → OrcaRouter",
-    reply_markup: modelKeyboard(current)
+      "✅ — доступна сейчас\n" +
+      "❌ — сейчас недоступна\n\n" +
+      "Если выбранная модель перестанет отвечать, Great Jarvis автоматически перейдёт на рабочий резерв.",
+    reply_markup: modelKeyboard(current, statuses)
   });
 }
 
-function modelKeyboard(current) {
+function modelKeyboard(current, statuses = {}) {
+  const icon = key => statuses[key] === false ? "❌" : "✅";
+  const selected = key => current === key ? "• " : "";
+
   return {
     inline_keyboard: [
-      [{ text: `${current === "qwen" ? "✅ " : ""}Qwen 3.8 27B`, callback_data: "model:qwen" }],
-      [{ text: `${current === "deepseek_pro" ? "✅ " : ""}DeepSeek V4 Pro`, callback_data: "model:deepseek_pro" }],
-      [{ text: `${current === "deepseek_flash" ? "✅ " : ""}DeepSeek V4 Flash`, callback_data: "model:deepseek_flash" }],
-      [{ text: `${current === "mimo" ? "✅ " : ""}MiMo V2.5`, callback_data: "model:mimo" }],
-      [{ text: `${current === "th_rudder" ? "✅ " : ""}TH-Rudder`, callback_data: "model:th_rudder" }],
-      [{ text: `${current === "nara_mistral_large" ? "✅ " : ""}Mistral Large`, callback_data: "model:nara_mistral_large" }],
-      [{ text: `${current === "nara_mistral_medium" ? "✅ " : ""}Mistral Medium 3.5`, callback_data: "model:nara_mistral_medium" }],
-      [{ text: `${current === "nara_tencent_hy3_free" ? "✅ " : ""}Tencent HY3 Free`, callback_data: "model:nara_tencent_hy3_free" }],
-      [{ text: `${current === "nara_auto" ? "✅ " : ""}Nara Auto`, callback_data: "model:nara_auto" }],
-      [{ text: `${current === "orca_free" ? "✅ " : ""}Orca Auto Free`, callback_data: "model:orca_free" }]
+      [{ text: `${icon("qwen")} ${selected("qwen")}Qwen 3.8 27B`, callback_data: "model:qwen" }],
+      [{ text: `${icon("deepseek_pro")} ${selected("deepseek_pro")}DeepSeek V4 Pro`, callback_data: "model:deepseek_pro" }],
+      [{ text: `${icon("deepseek_flash")} ${selected("deepseek_flash")}DeepSeek V4 Flash`, callback_data: "model:deepseek_flash" }],
+      [{ text: `${icon("mimo")} ${selected("mimo")}MiMo V2.5`, callback_data: "model:mimo" }],
+      [{ text: `${icon("th_rudder")} ${selected("th_rudder")}TH-Rudder`, callback_data: "model:th_rudder" }],
+      [{ text: `${icon("nara_mistral_large")} ${selected("nara_mistral_large")}Mistral Large`, callback_data: "model:nara_mistral_large" }],
+      [{ text: `${icon("nara_mistral_medium")} ${selected("nara_mistral_medium")}Mistral Medium 3.5`, callback_data: "model:nara_mistral_medium" }],
+      [{ text: `${icon("nara_tencent_hy3_free")} ${selected("nara_tencent_hy3_free")}Tencent HY3 Free`, callback_data: "model:nara_tencent_hy3_free" }],
+      [{ text: `${icon("nara_auto")} ${selected("nara_auto")}Nara Auto`, callback_data: "model:nara_auto" }],
+      [{ text: `${icon("orca_free")} ${selected("orca_free")}Orca Auto Free`, callback_data: "model:orca_free" }]
     ]
   };
 }
@@ -543,11 +586,13 @@ async function setUserModel(env, userId, key) {
 }
 
 async function askSelectedModel(env, key, userText) {
-  const config = MODELS[key] || MODELS[DEFAULT_MODEL_KEY];
+  const selectedKey = MODELS[key] ? key : DEFAULT_MODEL_KEY;
+  const selectedConfig = MODELS[selectedKey];
   const errors = [];
 
-  for (let i = 0; i < config.routes.length; i++) {
-    const route = config.routes[i];
+  // 1. First try every route of the user's selected model.
+  for (let i = 0; i < selectedConfig.routes.length; i++) {
+    const route = selectedConfig.routes[i];
     const p = PROVIDERS[route.provider];
 
     if (!env[p.keyEnv]) {
@@ -561,44 +606,87 @@ async function askSelectedModel(env, key, userText) {
         text,
         provider: route.provider,
         model: route.model,
-        fallback: i > 0
+        modelKey: selectedKey,
+        fallback: i > 0,
+        globalFallback: false
       };
     } catch (e) {
-      errors.push(`${p.title}: ${e.message}`);
-      if (env.AUTO_FALLBACK === "false") break;
+      errors.push(`${p.title}/${route.model}: ${e.message}`);
+    }
+  }
+
+  if (env.AUTO_FALLBACK === "false") {
+    throw new Error(errors.join(" | ") || "Selected model unavailable");
+  }
+
+  // 2. If the selected model is completely unavailable, try every other model.
+  for (const [fallbackKey, config] of Object.entries(MODELS)) {
+    if (fallbackKey === selectedKey) continue;
+
+    for (const route of config.routes) {
+      const p = PROVIDERS[route.provider];
+      if (!env[p.keyEnv]) continue;
+
+      try {
+        const text = await callProvider(env, route.provider, route.model, userText, 1800);
+        return {
+          text,
+          provider: route.provider,
+          model: route.model,
+          modelKey: fallbackKey,
+          fallback: true,
+          globalFallback: true
+        };
+      } catch (e) {
+        errors.push(`${p.title}/${route.model}: ${e.message}`);
+      }
     }
   }
 
   throw new Error(errors.join(" | ") || "No working route");
 }
 
-async function callProvider(env, providerId, model, userText, maxTokens = 1800) {
+async function callProvider(env, providerId, model, userText, maxTokens = 1800, timeoutMs = 25000) {
   const provider = PROVIDERS[providerId];
   const key = env[provider.keyEnv];
 
   if (!key) throw new Error(`${provider.keyEnv} missing`);
 
-  const response = await fetch(`${provider.base}/chat/completions`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${key}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        {
-          role: "system",
-          content: env.SYSTEM_PROMPT || "Ты Great Jarvis — полезный Telegram-ассистент."
-        },
-        {
-          role: "user",
-          content: userText
-        }
-      ],
-      max_tokens: maxTokens
-    })
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort("provider_timeout"), timeoutMs);
+
+  let response;
+  try {
+    response = await fetch(`${provider.base}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json"
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model,
+        messages: [
+          {
+            role: "system",
+            content: env.SYSTEM_PROMPT || "Ты Great Jarvis — полезный Telegram-ассистент."
+          },
+          {
+            role: "user",
+            content: userText
+          }
+        ],
+        max_tokens: maxTokens
+      })
+    });
+  } catch (e) {
+    if (e?.name === "AbortError" || String(e).includes("provider_timeout")) {
+      throw new Error(`TIMEOUT after ${timeoutMs}ms`);
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
 
   let data;
   try {
