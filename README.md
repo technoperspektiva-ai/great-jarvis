@@ -1,64 +1,87 @@
-# Great Jarvis v4.6
+# Great Jarvis v5
 
-Updated free-model routing.
+Telegram: `@greatjarvis_bot`
 
-## Exact routes
+Multi-provider free/fallback build.
 
-- Qwen 3.8 27B
-  - OrcaRouter: `qwen/qwen3.8-27b-free`
+## Providers
 
-- DeepSeek V4 Pro
-  - TeamoRouter: `deepseek-v4-pro-free`
-  - OrcaRouter fallback: `deepseek/deepseek-v4-pro-free`
+Existing:
+- TeamoRouter
+- OrcaRouter
+- Token Harbor
+- NaraRouter
 
-- DeepSeek V4 Flash
-  - TeamoRouter: `deepseek-v4-flash-free`
-  - OrcaRouter fallback: `deepseek/deepseek-v4-flash-free`
-  - Token Harbor fallback: `deepseek-v4-flash:free`
-
-- MiMo V2.5
-  - Token Harbor: `mimo-v2.5:free`
-
-- TH-Rudder
-  - Token Harbor: `th-rudder`
-
-- Mistral Large
-  - NaraRouter: `mistral-large`
-
-- Mistral Medium 3.5
-  - NaraRouter: `mistral-medium-3-5`
-
-- Tencent HY3 Free
-  - NaraRouter: `tencent-hy3-free`
-
-- Nara Auto
-  - NaraRouter: `auto/bynara`
-
-- Orca Auto Free
-  - OrcaRouter: `orcarouter/free`
+Added in v5:
+- Groq
+- OpenRouter
+- NVIDIA NIM
+- Cloudflare Workers AI (native binding, no external key)
 
 ## Cloudflare Secrets
 
-Required:
-- `TELEGRAM_BOT_TOKEN`
-- `TELEGRAM_WEBHOOK_SECRET`
+Keep/add:
 
-Provider API keys:
-- `TEAMOROUTER_API_KEY`
-- `ORCAROUTER_API_KEY`
-- `TOKENHARBOR_API_KEY`
-- `NARAROUTER_API_KEY`
+```text
+TELEGRAM_BOT_TOKEN
+TELEGRAM_WEBHOOK_SECRET
 
-No OpenAI API key is needed.
+TEAMOROUTER_API_KEY
+ORCAROUTER_API_KEY
+TOKENHARBOR_API_KEY
+NARAROUTER_API_KEY
 
-NaraRouter base URL:
-`https://router.bynara.id/v1`
+GROQ_API_KEY
+OPENROUTER_API_KEY
+NVIDIA_API_KEY
+```
 
-NaraRouter keys normally start with:
-`sk-nry-`
+No OpenAI API key is required.
 
-To see the exact models enabled for your Nara account:
-`https://great-jarvis.black-sci-official.workers.dev/nara-models`
+Cloudflare Workers AI uses:
+
+```toml
+[ai]
+binding = "AI"
+```
+
+## New v5 routes
+
+Groq:
+- `qwen/qwen3.8-27b`
+- `openai/gpt-oss-120b`
+- `openai/gpt-oss-20b`
+
+OpenRouter:
+- `openrouter/free`
+
+Cloudflare Workers AI:
+- `@cf/zai-org/glm-4.7-flash`
+- `@cf/google/gemma-4-26b-a4b-it`
+- `@cf/openai/gpt-oss-120b`
+- `@cf/nvidia/nemotron-3-120b-a12b`
+
+NVIDIA NIM:
+- `z-ai/glm-5-3`
+- `z-ai/glm-5-3-flash`
+- `openai/gpt-oss-120b`
+- `openai/gpt-oss-20b`
+
+All previous routes are retained.
+
+## Model menu
+
+`/model` automatically builds buttons from the model registry, so newly added model entries cannot be forgotten.
+
+Status:
+- ✅ confirmed working
+- ⚠️ timeout/rate-limit/temporary state
+- ❌ confirmed auth/model error
+
+A bad provider never blocks the bot. It tries:
+1. selected model
+2. alternative routes for that model
+3. other configured models
 
 ## Deploy
 
@@ -68,59 +91,32 @@ npx wrangler login
 npm run deploy
 ```
 
-Durable Object storage is declared in `wrangler.toml`.
+## Webhook
 
-## Setup webhook
-
-Open:
-
+```text
 https://great-jarvis.black-sci-official.workers.dev/setup-webhook
+```
 
 ## Diagnostics
 
-Open:
+All routes:
 
+```text
 https://great-jarvis.black-sci-official.workers.dev/test-routes
+```
 
-A model is usable if at least one of its routes returns `ok: true`.
+Provider model lists:
 
-## Telegram
+```text
+https://great-jarvis.black-sci-official.workers.dev/provider-models?provider=groq
+https://great-jarvis.black-sci-official.workers.dev/provider-models?provider=openrouter
+https://great-jarvis.black-sci-official.workers.dev/provider-models?provider=nvidia
+```
 
+Telegram commands:
 - `/start`
 - `/model`
 - `/current`
 - `/providers`
 - `/testroutes`
 - `/help`
-
-
-## v4.4 diagnostics fix
-
-`/test-routes` now checks all routes in parallel instead of sequentially.
-Each provider route gets a 7-second timeout, so one slow API can no longer block
-the whole diagnostics page.
-
-
-## v4.5 resilient routing
-
-- `/model` shows live status:
-  - ✅ available
-  - ❌ unavailable
-- A broken provider does not stop the bot.
-- The selected model is tried first.
-- If all routes for the selected model fail, Great Jarvis automatically tries
-  other configured models until one succeeds.
-- `/current` also shows the live availability status.
-
-
-## v4.6 health status fix
-
-The model menu no longer treats a slow provider as dead.
-
-Statuses:
-- ✅ confirmed working
-- ⚠️ connected but health check timed out / rate limited / temporary provider error
-- ❌ confirmed auth or model error
-
-Health probes run in parallel with an 8-second timeout.
-The status is informational only and never blocks normal chat routing.

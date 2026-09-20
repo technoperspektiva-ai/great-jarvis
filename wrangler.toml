@@ -13,3 +13,6 @@ class_name = "UserPrefs"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["UserPrefs"]
+
+[ai]
+binding = "AI"

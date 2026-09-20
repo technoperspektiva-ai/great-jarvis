@@ -20,6 +20,25 @@ const PROVIDERS = {
     title: "NaraRouter",
     base: "https://router.bynara.id/v1",
     keyEnv: "NARAROUTER_API_KEY"
+  },
+  groq: {
+    title: "Groq",
+    base: "https://api.groq.com/openai/v1",
+    keyEnv: "GROQ_API_KEY"
+  },
+  openrouter: {
+    title: "OpenRouter",
+    base: "https://openrouter.ai/api/v1",
+    keyEnv: "OPENROUTER_API_KEY"
+  },
+  nvidia: {
+    title: "NVIDIA NIM",
+    base: "https://integrate.api.nvidia.com/v1",
+    keyEnv: "NVIDIA_API_KEY"
+  },
+  cloudflare: {
+    title: "Cloudflare Workers AI",
+    native: true
   }
 };
 
@@ -86,6 +105,87 @@ const MODELS = {
     routes: [
       { provider: "orca", model: "orcarouter/free" }
     ]
+  },
+groq_qwen: {
+    title: "Qwen 3.8 27B · Groq",
+    routes: [
+      { provider: "groq", model: "qwen/qwen3.8-27b" },
+      { provider: "orca", model: "qwen/qwen3.8-27b-free" }
+    ]
+  },
+  groq_gptoss120: {
+    title: "GPT-OSS 120B · Groq",
+    routes: [
+      { provider: "groq", model: "openai/gpt-oss-120b" },
+      { provider: "nvidia", model: "openai/gpt-oss-120b" },
+      { provider: "cloudflare", model: "@cf/openai/gpt-oss-120b" }
+    ]
+  },
+  groq_gptoss20: {
+    title: "GPT-OSS 20B · Groq",
+    routes: [
+      { provider: "groq", model: "openai/gpt-oss-20b" },
+      { provider: "nvidia", model: "openai/gpt-oss-20b" }
+    ]
+  },
+  openrouter_free: {
+    title: "OpenRouter Free",
+    routes: [
+      { provider: "openrouter", model: "openrouter/free" }
+    ]
+  },
+  cf_glm47: {
+    title: "GLM 4.7 Flash · Cloudflare",
+    routes: [
+      { provider: "cloudflare", model: "@cf/zai-org/glm-4.7-flash" }
+    ]
+  },
+  cf_gemma4: {
+    title: "Gemma 4 26B · Cloudflare",
+    routes: [
+      { provider: "cloudflare", model: "@cf/google/gemma-4-26b-a4b-it" }
+    ]
+  },
+  cf_gptoss120: {
+    title: "GPT-OSS 120B · Cloudflare",
+    routes: [
+      { provider: "cloudflare", model: "@cf/openai/gpt-oss-120b" },
+      { provider: "groq", model: "openai/gpt-oss-120b" },
+      { provider: "nvidia", model: "openai/gpt-oss-120b" }
+    ]
+  },
+  cf_nemotron3: {
+    title: "Nemotron 3 120B · Cloudflare",
+    routes: [
+      { provider: "cloudflare", model: "@cf/nvidia/nemotron-3-120b-a12b" }
+    ]
+  },
+  nvidia_glm53: {
+    title: "GLM 5.3 · NVIDIA",
+    routes: [
+      { provider: "nvidia", model: "z-ai/glm-5-3" }
+    ]
+  },
+  nvidia_glm53_flash: {
+    title: "GLM 5.3 Flash · NVIDIA",
+    routes: [
+      { provider: "nvidia", model: "z-ai/glm-5-3-flash" }
+    ]
+  },
+  nvidia_gptoss120: {
+    title: "GPT-OSS 120B · NVIDIA",
+    routes: [
+      { provider: "nvidia", model: "openai/gpt-oss-120b" },
+      { provider: "groq", model: "openai/gpt-oss-120b" },
+      { provider: "cloudflare", model: "@cf/openai/gpt-oss-120b" }
+    ]
+  },
+  nvidia_gptoss20: {
+    title: "GPT-OSS 20B · NVIDIA",
+    routes: [
+      { provider: "nvidia", model: "openai/gpt-oss-20b" },
+      { provider: "groq", model: "openai/gpt-oss-20b" }
+    ]
   }
 };
 
@@ -126,7 +226,7 @@ export default {
       return json({
         ok: true,
         name: "great-jarvis",
-        version: "4.6.0",
+        version: "5.0.0",
         telegram: "@greatjarvis_bot",
         providers: providerStatus(env),
         models: Object.fromEntries(
@@ -169,6 +269,10 @@ export default {
       return naraModels(env);
     }
 
+    if (request.method === "GET" && url.pathname === "/provider-models") {
+      return providerModels(url, env);
+    }
+
     if (request.method === "GET" && url.pathname === "/test-routes") {
       return testRoutes(env);
     }
@@ -196,13 +300,22 @@ export default {
   }
 };
 
+function providerConnected(env, provider) {
+  if (provider.native) return Boolean(env.AI);
+  return Boolean(provider.keyEnv && env[provider.keyEnv]);
+}
+
+function providerSecretName(provider) {
+  return provider.native ? "Cloudflare AI binding" : provider.keyEnv;
+}
+
 function providerStatus(env) {
   const result = {};
   for (const [id, p] of Object.entries(PROVIDERS)) {
     result[id] = {
       title: p.title,
-      connected: Boolean(env[p.keyEnv]),
-      secret: p.keyEnv
+      connected: providerConnected(env, p),
+      secret: providerSecretName(p)
     };
   }
   return result;
@@ -297,6 +410,44 @@ async function naraModels(env) {
   }
 }
 
+async function providerModels(url, env) {
+  const id = url.searchParams.get("provider");
+  if (!id || !PROVIDERS[id]) {
+    return json({
+      ok: false,
+      error: "Use ?provider=groq|openrouter|nvidia|teamo|orca|tokenharbor|nara"
+    }, 400);
+  }
+
+  const provider = PROVIDERS[id];
+
+  if (provider.native) {
+    return json({
+      ok: true,
+      provider: provider.title,
+      native: true,
+      models: Object.values(MODELS)
+        .flatMap(x => x.routes)
+        .filter(r => r.provider === id)
+        .map(r => r.model)
+    });
+  }
+
+  if (!providerConnected(env, provider)) {
+    return json({ ok: false, error: `${provider.keyEnv} missing` }, 500);
+  }
+
+  try {
+    const response = await fetch(`${provider.base}/models`, {
+      headers: { Authorization: `Bearer ${env[provider.keyEnv]}` }
+    });
+    const data = await response.json();
+    return json(data, response.ok ? 200 : response.status);
+  } catch (e) {
+    return json({ ok: false, error: String(e?.message || e) }, 500);
+  }
+}
+
 async function testRoutes(env) {
   const jobs = [];
 
@@ -305,14 +456,14 @@ async function testRoutes(env) {
       const provider = PROVIDERS[route.provider];
 
       jobs.push((async () => {
-        if (!env[provider.keyEnv]) {
+        if (!providerConnected(env, provider)) {
           return {
             model: cfg.title,
             provider: provider.title,
             route_model: route.model,
             ok: false,
             skipped: true,
-            error: `${provider.keyEnv} missing`
+            error: `${providerSecretName(provider)} missing`
           };
         }
 
@@ -409,7 +560,7 @@ async function handleUpdate(update, env) {
   if (text === "/providers") {
     const lines = ["API-сервисы:"];
     for (const p of Object.values(PROVIDERS)) {
-      lines.push(`${env[p.keyEnv] ? "✅" : "❌"} ${p.title}`);
+      lines.push(`${providerConnected(env, p) ? "✅" : "❌"} ${p.title}`);
     }
     lines.push("", "Тест маршрутов: /testroutes");
     await send(env, chatId, lines.join("\n"));
@@ -509,7 +660,7 @@ async function getModelStatuses(env) {
       const apiKey = env[provider.keyEnv];
 
       if (!apiKey) {
-        return { state: "bad", reason: `${provider.keyEnv} missing` };
+        return { state: "bad", reason: `${providerSecretName(provider)} missing` };
       }
 
       try {
@@ -536,61 +687,24 @@ async function getModelStatuses(env) {
 
 async function probeRoute(env, providerId, model) {
   const provider = PROVIDERS[providerId];
-  const key = env[provider.keyEnv];
 
-  if (!key) return { state: "bad", reason: `${provider.keyEnv} missing` };
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort("health_timeout"), 8000);
+  if (!providerConnected(env, provider)) {
+    return { state: "bad", reason: `${providerSecretName(provider)} missing` };
+  }
 
   try {
-    const response = await fetch(`${provider.base}/chat/completions`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json"
-      },
-      signal: controller.signal,
-      body: JSON.stringify({
-        model,
-        messages: [{ role: "user", content: "Reply only OK" }],
-        max_tokens: 8
-      })
-    });
-
-    let data = null;
-    try {
-      data = await response.json();
-    } catch {}
-
-    if (response.ok) {
-      return { state: "ok", reason: "working" };
-    }
-
-    const msg = String(
-      data?.error?.message ||
-      data?.message ||
-      data?.detail ||
-      `HTTP ${response.status}`
-    );
-
-    if (response.status === 401 || response.status === 403) {
-      return { state: "bad", reason: `${response.status}: ${msg}` };
-    }
-
-    if (response.status === 404 || /model.*not|unknown model|not active/i.test(msg)) {
-      return { state: "bad", reason: `${response.status}: ${msg}` };
-    }
-
-    // Rate limits, overloaded providers and 5xx are temporary states.
-    return { state: "unknown", reason: `${response.status}: ${msg}` };
+    await callProvider(env, providerId, model, "Reply only OK", 8, 8000);
+    return { state: "ok", reason: "working" };
   } catch (e) {
-    if (e?.name === "AbortError" || String(e).includes("health_timeout")) {
-      return { state: "unknown", reason: "health check timeout" };
+    const msg = String(e?.message || e);
+
+    if (/401|403|invalid api key|unauthor|forbidden/i.test(msg)) {
+      return { state: "bad", reason: msg };
     }
-    return { state: "unknown", reason: String(e?.message || e) };
-  } finally {
-    clearTimeout(timer);
+    if (/404|unknown model|model.*not|not active/i.test(msg)) {
+      return { state: "bad", reason: msg };
+    }
+    return { state: "unknown", reason: msg };
   }
 }
 
@@ -605,7 +719,7 @@ async function showModelMenu(env, chatId, userId) {
       "✅ — отвечает сейчас\n" +
       "⚠️ — сервис подключён, но проверка не подтвердилась (таймаут / лимит / временная ошибка)\n" +
       "❌ — подтверждённая ошибка ключа или модели\n\n" +
-      "Статус не блокирует работу: Great Jarvis всё равно пробует выбранную модель и рабочие резервы.",
+      "Статус не блокирует работу: Great Jarvis пробует выбранную модель, её резервы и затем другие рабочие модели.",
     reply_markup: modelKeyboard(current, statuses)
   });
 }
@@ -618,21 +732,11 @@ function modelKeyboard(current, statuses = {}) {
     return "⚠️";
   };
 
-  const selected = key => current === key ? "• " : "";
-
   return {
-    inline_keyboard: [
-      [{ text: `${icon("qwen")} ${selected("qwen")}Qwen 3.8 27B`, callback_data: "model:qwen" }],
-      [{ text: `${icon("deepseek_pro")} ${selected("deepseek_pro")}DeepSeek V4 Pro`, callback_data: "model:deepseek_pro" }],
-      [{ text: `${icon("deepseek_flash")} ${selected("deepseek_flash")}DeepSeek V4 Flash`, callback_data: "model:deepseek_flash" }],
-      [{ text: `${icon("mimo")} ${selected("mimo")}MiMo V2.5`, callback_data: "model:mimo" }],
-      [{ text: `${icon("th_rudder")} ${selected("th_rudder")}TH-Rudder`, callback_data: "model:th_rudder" }],
-      [{ text: `${icon("nara_mistral_large")} ${selected("nara_mistral_large")}Mistral Large`, callback_data: "model:nara_mistral_large" }],
-      [{ text: `${icon("nara_mistral_medium")} ${selected("nara_mistral_medium")}Mistral Medium 3.5`, callback_data: "model:nara_mistral_medium" }],
-      [{ text: `${icon("nara_tencent_hy3_free")} ${selected("nara_tencent_hy3_free")}Tencent HY3 Free`, callback_data: "model:nara_tencent_hy3_free" }],
-      [{ text: `${icon("nara_auto")} ${selected("nara_auto")}Nara Auto`, callback_data: "model:nara_auto" }],
-      [{ text: `${icon("orca_free")} ${selected("orca_free")}Orca Auto Free`, callback_data: "model:orca_free" }]
-    ]
+    inline_keyboard: Object.entries(MODELS).map(([key, cfg]) => [{
+      text: `${icon(key)} ${current === key ? "• " : ""}${cfg.title}`,
+      callback_data: `model:${key}`
+    }])
   };
 }
 
@@ -672,7 +776,7 @@ async function askSelectedModel(env, key, userText) {
     const route = selectedConfig.routes[i];
     const p = PROVIDERS[route.provider];
 
-    if (!env[p.keyEnv]) {
+    if (!providerConnected(env, p)) {
       errors.push(`${p.title}: ${p.keyEnv} missing`);
       continue;
     }
@@ -702,7 +806,7 @@ async function askSelectedModel(env, key, userText) {
 
     for (const route of config.routes) {
       const p = PROVIDERS[route.provider];
-      if (!env[p.keyEnv]) continue;
+      if (!providerConnected(env, p)) continue;
 
       try {
         const text = await callProvider(env, route.provider, route.model, userText, 1800);
@@ -725,10 +829,41 @@ async function askSelectedModel(env, key, userText) {
 
 async function callProvider(env, providerId, model, userText, maxTokens = 1800, timeoutMs = 25000) {
   const provider = PROVIDERS[providerId];
+
+  if (!providerConnected(env, provider)) {
+    throw new Error(`${providerSecretName(provider)} missing`);
+  }
+
+  const systemPrompt =
+    env.SYSTEM_PROMPT || "Ты Great Jarvis — полезный Telegram-ассистент.";
+
+  if (provider.native) {
+    const timeout = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`TIMEOUT after ${timeoutMs}ms`)), timeoutMs)
+    );
+
+    const run = env.AI.run(model, {
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userText }
+      ],
+      max_tokens: maxTokens
+    });
+
+    const data = await Promise.race([run, timeout]);
+
+    const text =
+      data?.response ||
+      data?.result?.response ||
+      data?.choices?.[0]?.message?.content ||
+      data?.output_text;
+
+    if (typeof text === "string" && text.trim()) return text.trim();
+
+    throw new Error("Empty Workers AI response");
+  }
+
   const key = env[provider.keyEnv];
-
-  if (!key) throw new Error(`${provider.keyEnv} missing`);
-
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort("provider_timeout"), timeoutMs);
 
@@ -738,20 +873,20 @@ async function callProvider(env, providerId, model, userText, maxTokens = 1800, 
       method: "POST",
       headers: {
         Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        ...(providerId === "openrouter"
+          ? {
+              "HTTP-Referer": "https://great-jarvis.black-sci-official.workers.dev",
+              "X-Title": "Great Jarvis"
+            }
+          : {})
       },
       signal: controller.signal,
       body: JSON.stringify({
         model,
         messages: [
-          {
-            role: "system",
-            content: env.SYSTEM_PROMPT || "Ты Great Jarvis — полезный Telegram-ассистент."
-          },
-          {
-            role: "user",
-            content: userText
-          }
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userText }
         ],
         max_tokens: maxTokens
       })
@@ -778,15 +913,12 @@ async function callProvider(env, providerId, model, userText, maxTokens = 1800, 
       data?.message ||
       data?.detail ||
       `HTTP ${response.status}`;
-
-    throw new Error(`${response.status}: ${String(msg).slice(0, 240)}`);
+    throw new Error(`${response.status}: ${String(msg).slice(0, 260)}`);
   }
 
   const content = data?.choices?.[0]?.message?.content;
 
-  if (typeof content === "string" && content.trim()) {
-    return content.trim();
-  }
+  if (typeof content === "string" && content.trim()) return content.trim();
 
   if (Array.isArray(content)) {
     const text = content.map(x => x?.text || x?.content || "").join("").trim();
